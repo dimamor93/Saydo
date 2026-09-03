@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.audio.recorder import AudioRecorder
+from app.core.modes import ProcessingMode
+from app.core.pipeline import ProcessingPipeline
 from app.hotkey.manager import HotkeyManager
 from app.injection.text_injector import TextInjector
 from app.stt.local_whisper import LocalWhisperProvider
@@ -8,6 +10,7 @@ from app.text.processor import TextProcessor
 
 
 HOTKEY = "right ctrl"
+MODE = ProcessingMode.INSTANT
 
 
 def main() -> None:
@@ -16,11 +19,16 @@ def main() -> None:
     recorder = AudioRecorder()
     stt = LocalWhisperProvider()
     processor = TextProcessor()
+    pipeline = ProcessingPipeline(
+        text_processor=processor,
+        mode=MODE,
+    )
     injector = TextInjector()
     hotkey = HotkeyManager(HOTKEY)
 
     print()
     print("[Saydo] Ready")
+    print(f"[Saydo] Mode: {MODE.value}")
     print(f"[Saydo] Hold '{HOTKEY}', speak, then release.")
     print("[Saydo] Press Esc to exit.")
     print()
@@ -61,7 +69,11 @@ def main() -> None:
 
             print(f"[Saydo] STT: {text}")
 
-            text = processor.process(text)
+            try:
+                text = pipeline.process(text)
+            except NotImplementedError as exc:
+                print(f"[Saydo] {exc}")
+                return
 
             if not text:
                 print("[Saydo] Nothing to insert.")
