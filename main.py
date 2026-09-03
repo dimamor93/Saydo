@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import keyboard
-
 from app.audio.recorder import AudioRecorder
+from app.hotkey.manager import HotkeyManager
 from app.injection.text_injector import TextInjector
 from app.stt.local_whisper import LocalWhisperProvider
 from app.text.processor import TextProcessor
 
 
-HOTKEY = "Right Ctrl"
+HOTKEY = "right ctrl"
 
 
 def main() -> None:
@@ -18,6 +17,7 @@ def main() -> None:
     stt = LocalWhisperProvider()
     processor = TextProcessor()
     injector = TextInjector()
+    hotkey = HotkeyManager(HOTKEY)
 
     print()
     print("[Saydo] Ready")
@@ -74,19 +74,15 @@ def main() -> None:
         except Exception as exc:
             print(f"[Saydo] Error: {exc}")
 
-    def handle_key_event(event: keyboard.KeyboardEvent) -> None:
-        if event.name != "right ctrl":
-            return
+    hotkey.start(
+        on_press=start_recording,
+        on_release=stop_recording,
+    )
 
-        if event.event_type == "down":
-            start_recording()
-
-        elif event.event_type == "up":
-            stop_recording()
-
-    keyboard.hook(handle_key_event)
-
-    keyboard.wait("esc")
+    try:
+        hotkey.wait_for_exit()
+    finally:
+        hotkey.stop()
 
     print("[Saydo] Exiting...")
 
