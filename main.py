@@ -1,7 +1,6 @@
 from __future__ import annotations
-
+from app.text.processor import TextProcessor
 import keyboard
-
 from app.audio.recorder import AudioRecorder
 from app.injection.text_injector import TextInjector
 from app.stt.local_whisper import LocalWhisperProvider
@@ -16,7 +15,8 @@ def main() -> None:
     recorder = AudioRecorder()
     stt = LocalWhisperProvider()
     injector = TextInjector()
-
+    processor = TextProcessor()
+    
     print()
     print("[Saydo] Ready")
     print(f"[Saydo] Hold '{HOTKEY}', speak, then release.")
@@ -43,7 +43,9 @@ def main() -> None:
             if len(audio) == 0:
                 print("[Saydo] No audio captured.")
                 return
-
+            print(
+                f"[Saydo] Recorded {len(audio) / recorder.sample_rate:.2f} seconds."
+            )
             print("[Saydo] Transcribing...")
 
             text = stt.transcribe(audio)
@@ -52,7 +54,15 @@ def main() -> None:
                 print("[Saydo] Nothing recognized.")
                 return
 
-            print(f"[Saydo] Done: {text}")
+            print(f"[Saydo] STT: {text}")
+
+            text = processor.process(text)
+
+            if not text:
+                print("[Saydo] Nothing to insert.")
+                return
+
+            print(f"[Saydo] Final: {text}")
 
             injector.inject(text)
 
