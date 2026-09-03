@@ -5,6 +5,7 @@ from app.core.modes import ProcessingMode
 from app.core.pipeline import ProcessingPipeline
 from app.hotkey.manager import HotkeyManager
 from app.injection.text_injector import TextInjector
+from app.llm.local import LocalLLMProvider
 from app.stt.local_whisper import LocalWhisperProvider
 from app.text.processor import TextProcessor
 
@@ -19,10 +20,14 @@ def main() -> None:
     recorder = AudioRecorder()
     stt = LocalWhisperProvider()
     processor = TextProcessor()
+    llm = LocalLLMProvider()
+
     pipeline = ProcessingPipeline(
         text_processor=processor,
         mode=MODE,
+        llm_provider=llm,
     )
+
     injector = TextInjector()
     hotkey = HotkeyManager(HOTKEY)
 
@@ -71,8 +76,8 @@ def main() -> None:
 
             try:
                 text = pipeline.process(text)
-            except NotImplementedError as exc:
-                print(f"[Saydo] {exc}")
+            except Exception as exc:
+                print(f"[Saydo] Processing error: {exc}")
                 return
 
             if not text:
