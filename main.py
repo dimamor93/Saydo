@@ -1,12 +1,14 @@
 from __future__ import annotations
-from app.text.processor import TextProcessor
+
 import keyboard
+
 from app.audio.recorder import AudioRecorder
 from app.injection.text_injector import TextInjector
 from app.stt.local_whisper import LocalWhisperProvider
+from app.text.processor import TextProcessor
 
 
-HOTKEY = "right ctrl"
+HOTKEY = "Right Ctrl"
 
 
 def main() -> None:
@@ -14,9 +16,9 @@ def main() -> None:
 
     recorder = AudioRecorder()
     stt = LocalWhisperProvider()
-    injector = TextInjector()
     processor = TextProcessor()
-    
+    injector = TextInjector()
+
     print()
     print("[Saydo] Ready")
     print(f"[Saydo] Hold '{HOTKEY}', speak, then release.")
@@ -43,9 +45,12 @@ def main() -> None:
             if len(audio) == 0:
                 print("[Saydo] No audio captured.")
                 return
+
             print(
-                f"[Saydo] Recorded {len(audio) / recorder.sample_rate:.2f} seconds."
+                f"[Saydo] Recorded "
+                f"{len(audio) / recorder.sample_rate:.2f} seconds."
             )
+
             print("[Saydo] Transcribing...")
 
             text = stt.transcribe(audio)
@@ -69,15 +74,17 @@ def main() -> None:
         except Exception as exc:
             print(f"[Saydo] Error: {exc}")
 
-    keyboard.on_press_key(
-        HOTKEY,
-        lambda _: start_recording(),
-    )
+    def handle_key_event(event: keyboard.KeyboardEvent) -> None:
+        if event.name != "right ctrl":
+            return
 
-    keyboard.on_release_key(
-        HOTKEY,
-        lambda _: stop_recording(),
-    )
+        if event.event_type == "down":
+            start_recording()
+
+        elif event.event_type == "up":
+            stop_recording()
+
+    keyboard.hook(handle_key_event)
 
     keyboard.wait("esc")
 
