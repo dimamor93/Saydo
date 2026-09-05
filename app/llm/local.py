@@ -59,6 +59,8 @@ class LocalLLMProvider(LLMProvider):
             "prompt": text,
             "stream": False,
             "think": False,
+            # AI Mode preloads the model and keeps it resident in Ollama.
+            "keep_alive": -1,
         }
 
         request = urllib.request.Request(

@@ -625,6 +625,155 @@ class AIUnavailableDialog(QDialog):
             )
 
 
+
+class AIModelLoadingDialog(QDialog):
+    """Themed modal shown while Ollama loads the selected model into memory."""
+
+    def __init__(self, parent: QWidget, palette: dict[str, str], model: str, ollama: OllamaService) -> None:
+        super().__init__(parent)
+        self.model = model
+        self.ollama = ollama
+        self._cancel_event = threading.Event()
+        self._result: dict[str, Any] = {"done": False, "ok": False, "error": ""}
+        self._worker: threading.Thread | None = None
+        self._dots = 0
+
+        self.setWindowTitle("AI Mode")
+        self.setModal(True)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedWidth(470)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        card = QFrame()
+        card.setObjectName("AIModelLoadingCard")
+        card.setStyleSheet(f"""
+            QFrame#AIModelLoadingCard {{
+                background: {palette["card"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 18px;
+            }}
+            QLabel#AIModelLoadingTitle {{
+                color: {palette["text"]};
+                font-size: 19px;
+                font-weight: 700;
+            }}
+            QLabel#AIModelLoadingText {{
+                color: {palette["muted"]};
+                font-size: 13px;
+            }}
+            QLabel#AIModelLoadingModel {{
+                color: {palette["text"]};
+                background: {palette["card_alt"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 10px;
+                padding: 11px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton#AIModelLoadingCancel {{
+                background: transparent;
+                color: {palette["muted"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 10px;
+                padding: 9px 18px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton#AIModelLoadingCancel:hover {{
+                background: {palette["hover"]};
+                color: {palette["text"]};
+            }}
+        """)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("Готовим AI Mode")
+        title.setObjectName("AIModelLoadingTitle")
+        layout.addWidget(title)
+
+        self.text_label = QLabel("Saydo загружает языковую модель в память. Это может занять некоторое время при первом запуске.")
+        self.text_label.setObjectName("AIModelLoadingText")
+        self.text_label.setWordWrap(True)
+        layout.addWidget(self.text_label)
+
+        model_label = QLabel(model)
+        model_label.setObjectName("AIModelLoadingModel")
+        model_label.setWordWrap(True)
+        layout.addWidget(model_label)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("Отмена")
+        cancel.setObjectName("AIModelLoadingCancel")
+        cancel.clicked.connect(self._cancel)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start(150)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.parentWidget() is not None:
+            parent = self.parentWidget()
+            self.move(
+                max(0, parent.x() + (parent.width() - self.width()) // 2),
+                max(0, parent.y() + (parent.height() - self.height()) // 2),
+            )
+        if self._worker is None:
+            self._worker = threading.Thread(target=self._load_model, daemon=True)
+            self._worker.start()
+
+    def _load_model(self) -> None:
+        if self._cancel_event.is_set():
+            self._result.update(done=True, ok=False)
+            return
+        try:
+            ok, error = self.ollama.load_model(self.model)
+            self._result.update(done=True, ok=ok, error=error)
+        except Exception as exc:
+            self._result.update(done=True, ok=False, error=str(exc))
+
+        # If cancellation happened while Ollama was loading, explicitly unload
+        # the model once the load request has returned.
+        if self._cancel_event.is_set():
+            self.ollama.unload_model(self.model)
+            self._result.update(done=True, ok=False)
+
+    def _poll(self) -> None:
+        if self._cancel_event.is_set():
+            self.text_label.setText("Останавливаем загрузку и освобождаем память…")
+            return
+        self._dots = (self._dots + 1) % 4
+        self.text_label.setText(
+            "Saydo загружает языковую модель в память"
+            + "." * self._dots
+            + "\nЭто может занять некоторое время при первом запуске."
+        )
+        if self._result["done"]:
+            self._timer.stop()
+            self.done(QDialog.Accepted if self._result["ok"] else QDialog.Rejected)
+
+    def _cancel(self) -> None:
+        self._cancel_event.set()
+        self.text_label.setText("Останавливаем загрузку и освобождаем память…")
+        # Keep the dialog open until the worker confirms that the model has
+        # been unloaded. This guarantees AI Mode is not left half-enabled.
+        if self._worker is None:
+            self.done(QDialog.Rejected)
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -951,15 +1100,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_ai_mode(self, checked: bool) -> None:
         if not checked:
-            self.mode = "instant"
-            self._llm_settings.save_ai_mode(False)
-            self._set_ai_switch(False)
-            if self._on_mode_change is not None:
-                try:
-                    self._on_mode_change(self.mode)
-                except Exception as exc:
-                    print(f"[Saydo] Mode callback error: {exc}")
-            self._update_mode_label()
+            self._disable_ai_mode()
             return
 
         palette = self._palette_for_theme(self.current_theme)
@@ -995,6 +1136,19 @@ class MainWindow(QMainWindow):
             self._disable_ai_mode()
             return
 
+        selected_model = self._llm_settings.get_model() or models[0]
+        if selected_model not in models:
+            selected_model = models[0]
+            self._llm_settings.save_model(selected_model)
+
+        # Load the selected model into Ollama memory before enabling AI Mode.
+        # This makes the first dictation predictable and avoids a long,
+        # unexplained delay inside the normal processing path.
+        loading = AIModelLoadingDialog(self, palette, selected_model, self._ollama)
+        if loading.exec() != QDialog.Accepted:
+            self._disable_ai_mode()
+            return
+
         self.mode = "ai"
         self._llm_settings.save_ai_mode(True)
         self._set_ai_switch(True)
@@ -1006,7 +1160,17 @@ class MainWindow(QMainWindow):
         self._update_mode_label()
 
     def _disable_ai_mode(self) -> None:
-        """Force AI Mode back to Instant after a failed preflight check."""
+        """Force AI Mode back to Instant and release the local LLM memory."""
+        selected_model = self._llm_settings.get_model()
+        if selected_model:
+            try:
+                # Wait for Ollama to acknowledge keep_alive=0 before finishing
+                # the transition, so the model is not left resident in memory.
+                unloaded = self._ollama.unload_model(selected_model)
+                if not unloaded:
+                    print(f"[Saydo] Could not confirm unloading model: {selected_model}")
+            except Exception as exc:
+                print(f"[Saydo] LLM unload error: {exc}")
         self.mode = "instant"
         self._llm_settings.save_ai_mode(False)
         self._set_ai_switch(False)
