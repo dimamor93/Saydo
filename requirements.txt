@@ -1,0 +1,27 @@
+# Saydo dependencies
+# Python 3.12+
+
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+numpy
+sounddevice
+pynput
+keyboard
+pyperclip
+Pillow
+pystray
+requests
+
+# PyTorch + CUDA 13.0
+torch==2.11.0+cu130
+torchaudio==2.11.0+cu130
+
+# GigaAM-v3
+gigaam[torch] @ git+https://github.com/salute-developers/GigaAM.git
+
+# GigaAM long-form dependencies
+pyannote-audio==4.0.7
+torchcodec==0.10.0
+numba>=0.62
+pyarrow>=23
+transformers>=5,<6
