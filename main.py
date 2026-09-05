@@ -107,7 +107,7 @@ def main() -> None:
 
         desktop_ui.stop()
 
-    tray = SaydoTray(on_exit=shutdown)
+    tray = SaydoTray(on_show=desktop_ui.show, on_exit=shutdown)
     tray.start()
 
     desktop_ui.set_runtime_state(SaydoState.IDLE.value)

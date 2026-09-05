@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
+
+from app.core.dictionary import UserDictionary
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -119,7 +122,6 @@ class SaydoDesktopUI:
         self._window: MainWindow | None = None
         self._started = threading.Event()
         self._history = HistoryStore()
-
     def start(self) -> None:
         self._thread = threading.current_thread()
         self._app = QApplication.instance() or QApplication(sys.argv)
@@ -159,8 +161,23 @@ class SaydoDesktopUI:
                 self._window.set_live_text(payload)
             elif command == "state":
                 self._window.set_runtime_state(payload)
+            elif command == "show":
+                self._show_window()
             elif command == "stop":
+                self._window.allow_close = True
                 self._window.close()
+                self._app.quit()
+
+    def _show_window(self) -> None:
+        if self._window is None:
+            return
+        self._window.show()
+        self._window.showNormal()
+        self._window.raise_()
+        self._window.activateWindow()
+
+    def show(self) -> None:
+        self._queue.put(("show", None))
 
     def add_transcription(self, text: str, duration: float, mode: str) -> None:
         self._queue.put(("history", (text, duration, mode)))
@@ -184,6 +201,11 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.history = history
+        # The UI and processing pipeline use the same persistent dictionary
+        # file. Keeping a UI-side instance here avoids coupling the window to
+        # the desktop controller while still sharing all learned entries.
+        self._dictionary = UserDictionary()
+        self.allow_close = False
         self.hotkey = hotkey
         self.mode = mode
         self.current_theme = "system"
@@ -288,11 +310,7 @@ class MainWindow(QMainWindow):
         self._pages["dashboard"] = self._dashboard_page()
         self._pages["history"] = self._history_page()
         self._pages["insights"] = self._insights_page()
-        self._pages["dictionary"] = self._simple_page(
-            "Словарь",
-            "Добавляйте слова и названия, которые Saydo должен распознавать без ошибок.",
-            "Добавить слово",
-        )
+        self._pages["dictionary"] = self._dictionary_page()
         self._pages["snippets"] = self._simple_page(
             "Сниппеты",
             "Готовые фразы для повторяющихся задач. Позже привяжем их к горячим клавишам.",
@@ -588,6 +606,7 @@ class MainWindow(QMainWindow):
         entries = self.history.load()
         self._refresh_stats(entries)
         self._refresh_recent(entries)
+        self._refresh_dictionary()
         if hasattr(self, "history_list"):
             self._refresh_history(entries)
         if hasattr(self, "insights_summary"):
@@ -625,13 +644,16 @@ class MainWindow(QMainWindow):
     def _refresh_recent(self, entries: list[dict[str, Any]]) -> None:
         self._clear_layout(self.recent_list)
         for entry in entries[:5]:
-            self.recent_list.addWidget(self._history_card(entry))
+            self.recent_list.addWidget(self._history_card(entry, editable=True))
 
-    def _history_card(self, entry: dict[str, Any]) -> QFrame:
+    def _history_card(self, entry: dict[str, Any], editable: bool = False) -> QFrame:
         card = self._card()
-        card.setMinimumHeight(66)
+        # Keep history rows visually stable. Entering edit mode must not
+        # resize the row or push neighbouring widgets around.
+        card.setFixedHeight(66)
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(10)
 
         ts = str(entry.get("timestamp", ""))
         try:
@@ -643,23 +665,254 @@ class MainWindow(QMainWindow):
         time_label = QLabel(stamp)
         time_label.setObjectName("TimeLabel")
         time_label.setFixedWidth(52)
-
-        text = QLabel(str(entry.get("text", "")))
-        text.setObjectName("HistoryText")
-        text.setWordWrap(True)
-        text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        copy_button = QPushButton("⧉")
-        copy_button.setObjectName("IconButton")
-        copy_button.setToolTip("Скопировать")
-        copy_button.clicked.connect(
-            lambda checked=False, value=str(entry.get("text", "")): self._copy(value)
-        )
-
         layout.addWidget(time_label)
-        layout.addWidget(text, 1)
-        layout.addWidget(copy_button)
+
+        original_text = str(entry.get("text", ""))
+
+        if editable:
+            text_label = QLabel(original_text)
+            text_label.setObjectName("HistoryText")
+            text_label.setWordWrap(True)
+            text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+            editor = QPlainTextEdit()
+            editor.setObjectName("HistoryEditor")
+            editor.setPlainText(original_text)
+            editor.setPlaceholderText("Исправьте текст…")
+            editor.setFixedHeight(44)
+            editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            editor.hide()
+
+            layout.addWidget(text_label, 1)
+            layout.addWidget(editor, 1)
+
+            copy_button = QPushButton("⧉")
+            copy_button.setObjectName("IconButton")
+            copy_button.setFixedSize(40, 40)
+            copy_button.setToolTip("Скопировать")
+
+            edit_button = QPushButton("✎")
+            edit_button.setObjectName("IconButton")
+            edit_button.setFixedSize(40, 40)
+            edit_button.setToolTip("Редактировать")
+
+            def copy_current() -> None:
+                self._copy(editor.toPlainText() if editor.isVisible() else text_label.text())
+
+            def toggle_edit() -> None:
+                if not editor.isVisible():
+                    # Enter edit mode without changing the card geometry.
+                    text_label.hide()
+                    editor.show()
+                    edit_button.setText("✓")
+                    edit_button.setObjectName("ConfirmButton")
+                    edit_button.setToolTip("Завершить редактирование")
+                    edit_button.style().unpolish(edit_button)
+                    edit_button.style().polish(edit_button)
+                    editor.setFocus()
+                    editor.selectAll()
+                else:
+                    # The checkmark always exits edit mode. If the text was
+                    # changed, _save_edited_transcription also learns the
+                    # correction; otherwise this is simply a cancel/finish.
+                    edited = editor.toPlainText().strip()
+                    original = original_text.strip()
+                    if edited and edited != original:
+                        self._save_edited_transcription(entry, edited)
+                    else:
+                        editor.hide()
+                        text_label.show()
+                        edit_button.setText("✎")
+                        edit_button.setObjectName("IconButton")
+                        edit_button.setToolTip("Редактировать")
+                        edit_button.style().unpolish(edit_button)
+                        edit_button.style().polish(edit_button)
+
+            copy_button.clicked.connect(copy_current)
+            edit_button.clicked.connect(toggle_edit)
+            layout.addWidget(copy_button)
+            layout.addWidget(edit_button)
+        else:
+            text = QLabel(original_text)
+            text.setObjectName("HistoryText")
+            text.setWordWrap(True)
+            text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            layout.addWidget(text, 1)
+
+            copy_button = QPushButton("⧉")
+            copy_button.setObjectName("IconButton")
+            copy_button.setFixedSize(40, 40)
+            copy_button.setToolTip("Скопировать")
+            copy_button.clicked.connect(
+                lambda checked=False, value=original_text: self._copy(value)
+            )
+            layout.addWidget(copy_button)
+
         return card
+
+    def _save_edited_transcription(self, entry: dict[str, Any], edited: str) -> None:
+        original = str(entry.get("text", "")).strip()
+        edited = edited.strip()
+        if not edited or edited == original:
+            return
+
+        # Learn simple word/phrase substitutions from the user's edit.
+        import difflib
+        old_words = original.split()
+        new_words = edited.split()
+        matcher = difflib.SequenceMatcher(a=old_words, b=new_words)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "replace" and (i2 - i1) == (j2 - j1):
+                for old, new in zip(old_words[i1:i2], new_words[j1:j2]):
+                    old_clean = old.strip(".,!?;:\"'()[]{}")
+                    new_clean = new.strip(".,!?;:\"'()[]{}")
+                    if old_clean and new_clean and old_clean.casefold() != new_clean.casefold():
+                        self._dictionary.add_correction(old_clean, new_clean)
+
+        # Update the history record itself so the corrected text becomes the
+        # user's canonical version for future review.
+        entries = self.history.load()
+        for item in entries:
+            if item is entry or (
+                item.get("timestamp") == entry.get("timestamp")
+                and item.get("text") == entry.get("text")
+            ):
+                item["text"] = edited
+                break
+        self.history.path.write_text(
+            json.dumps(entries, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.refresh()
+
+    def _dictionary_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        # Manual correction: recognized form -> desired form.
+        add_card = self._card()
+        add_layout = QHBoxLayout(add_card)
+        add_layout.setContentsMargins(18, 16, 18, 16)
+        add_layout.setSpacing(10)
+
+        self.dictionary_source_input = QLineEdit()
+        self.dictionary_source_input.setPlaceholderText("Как Saydo распознаёт…")
+        self.dictionary_source_input.setObjectName("Search")
+        self.dictionary_source_input.returnPressed.connect(self._add_dictionary_correction)
+        add_layout.addWidget(self.dictionary_source_input, 1)
+
+        arrow = QLabel("→")
+        arrow.setObjectName("TimeLabel")
+        arrow.setAlignment(Qt.AlignCenter)
+        add_layout.addWidget(arrow)
+
+        self.dictionary_replacement_input = QLineEdit()
+        self.dictionary_replacement_input.setPlaceholderText("Как должно быть…")
+        self.dictionary_replacement_input.setObjectName("Search")
+        self.dictionary_replacement_input.returnPressed.connect(self._add_dictionary_correction)
+        add_layout.addWidget(self.dictionary_replacement_input, 1)
+
+        add_button = QPushButton("Добавить")
+        add_button.setObjectName("PrimaryButton")
+        add_button.clicked.connect(self._add_dictionary_correction)
+        add_layout.addWidget(add_button)
+        layout.addWidget(add_card)
+
+        self.dictionary_search = QLineEdit()
+        self.dictionary_search.setPlaceholderText("Поиск в словаре…")
+        self.dictionary_search.setObjectName("Search")
+        self.dictionary_search.textChanged.connect(self._filter_dictionary)
+        layout.addWidget(self.dictionary_search)
+
+        self.dictionary_list = QListWidget()
+        self.dictionary_list.setObjectName("HistoryList")
+        self.dictionary_list.setSpacing(5)
+        layout.addWidget(self.dictionary_list, 1)
+        return page
+
+    def _add_dictionary_correction(self) -> None:
+        source = self.dictionary_source_input.text().strip()
+        replacement = self.dictionary_replacement_input.text().strip()
+        if not source or not replacement:
+            return
+        self._dictionary.add_correction(source, replacement)
+        self.dictionary_source_input.clear()
+        self.dictionary_replacement_input.clear()
+        self._refresh_dictionary()
+
+    def _refresh_dictionary(self) -> None:
+        if not hasattr(self, "dictionary_list"):
+            return
+
+        entries = self._dictionary.load()
+        self.dictionary_list.clear()
+
+        for index, entry in enumerate(entries):
+            item = QListWidgetItem()
+            widget = self._dictionary_card(entry, index)
+            item.setSizeHint(widget.sizeHint())
+            item.setData(Qt.UserRole, index)
+            self.dictionary_list.addItem(item)
+            self.dictionary_list.setItemWidget(item, widget)
+
+        self._filter_dictionary(self.dictionary_search.text())
+
+    def _dictionary_card(self, entry: dict[str, str], index: int) -> QFrame:
+        card = self._card()
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 10, 12, 10)
+
+        if entry.get("type") == "correction":
+            label = QLabel(
+                f"{entry.get('source', '')}  →  {entry.get('replacement', '')}"
+            )
+            kind_text = "Исправление"
+        else:
+            label = QLabel(entry.get("word", ""))
+            kind_text = "Слово"
+
+        label.setObjectName("HistoryText")
+        layout.addWidget(label, 1)
+
+        kind = QLabel(kind_text)
+        kind.setObjectName("TimeLabel")
+        layout.addWidget(kind)
+
+        delete = QPushButton("×")
+        delete.setObjectName("IconButton")
+        delete.setToolTip("Удалить из словаря")
+        delete.clicked.connect(
+            lambda checked=False, i=index: self._delete_dictionary(i)
+        )
+        layout.addWidget(delete)
+        return card
+
+    def _delete_dictionary(self, index: int) -> None:
+        self._dictionary.delete(index)
+        self._refresh_dictionary()
+
+    def _filter_dictionary(self, text: str) -> None:
+        if not hasattr(self, "dictionary_list"):
+            return
+
+        query = text.strip().casefold()
+        entries = self._dictionary.load()
+
+        for index in range(self.dictionary_list.count()):
+            item = self.dictionary_list.item(index)
+            entry_index = item.data(Qt.UserRole)
+            entry = (
+                entries[entry_index]
+                if isinstance(entry_index, int) and 0 <= entry_index < len(entries)
+                else {}
+            )
+            haystack = " ".join(
+                str(entry.get(key, ""))
+                for key in ("word", "source", "replacement")
+            ).casefold()
+            item.setHidden(bool(query and query not in haystack))
 
     def _refresh_history(self, entries: list[dict[str, Any]]) -> None:
         self.history_list.clear()
@@ -834,6 +1087,20 @@ class MainWindow(QMainWindow):
         #HistoryText {{
             font-size: 13px;
         }}
+        #HistoryEditor {{
+            background: {c["card_alt"]};
+            border: 1px solid {c["border"]};
+            border-radius: 10px;
+            padding: 8px;
+            font-size: 13px;
+        }}
+        #HistoryEditor {{
+            min-height: 0px;
+            max-height: 44px;
+        }}
+        #HistoryEditor:focus {{
+            border-color: {ACCENT};
+        }}
         QPushButton#LinkButton {{
             border: none;
             color: {ACCENT};
@@ -851,6 +1118,19 @@ class MainWindow(QMainWindow):
         QPushButton#IconButton:hover {{
             background: {c["hover"]};
             color: {c["text"]};
+        }}
+        QPushButton#ConfirmButton {{
+            border: none;
+            background: transparent;
+            color: #43D17A;
+            font-size: 18px;
+            font-weight: 700;
+            padding: 7px;
+            border-radius: 8px;
+        }}
+        QPushButton#ConfirmButton:hover {{
+            background: {c["hover"]};
+            color: #43D17A;
         }}
         QPushButton#PrimaryButton {{
             background: {ACCENT};
@@ -895,4 +1175,11 @@ class MainWindow(QMainWindow):
         """
 
     def closeEvent(self, event) -> None:
-        event.accept()
+        if getattr(self, "allow_close", False):
+            event.accept()
+            return
+
+        # Closing the window only hides the dashboard. Saydo keeps running
+        # in the system tray and continues listening for the global hotkey.
+        event.ignore()
+        self.hide()
