@@ -1,3 +1,4 @@
 # Development and quality tooling
 ruff>=0.12,<1
 mypy>=1.17,<2
+pytest>=8,<9

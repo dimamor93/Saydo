@@ -1,5 +1,110 @@
 [
   {
+    "text": "Привет, сайт.",
+    "raw_text": "Привет, сайт.",
+    "timestamp": "2026-09-06T01:11:51",
+    "duration": 4.68,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Саб. Как дела?",
+    "raw_text": "Привет, Саб. Как дела?",
+    "timestamp": "2026-09-06T01:11:40",
+    "duration": 2.89,
+    "mode": "instant"
+  },
+  {
+    "text": "Saydo, привет! Как дела? Проверяем.",
+    "raw_text": "Сейда, привет! Как дела? Проверяем.",
+    "timestamp": "2026-09-06T00:38:51",
+    "duration": 5.82,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Себ. Как дела?",
+    "raw_text": "Привет, Себ. Как дела?",
+    "timestamp": "2026-09-06T00:38:14",
+    "duration": 6.37,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Седа, как дела?",
+    "raw_text": "Привет, Седа, как дела?",
+    "timestamp": "2026-09-06T00:38:02",
+    "duration": 2.68,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет.",
+    "raw_text": "П привет.",
+    "timestamp": "2026-09-06T00:18:13",
+    "duration": 3.46,
+    "mode": "ai"
+  },
+  {
+    "text": "Э-э-э, привет.",
+    "raw_text": "Э-э-э, привет.",
+    "timestamp": "2026-09-06T00:17:38",
+    "duration": 3.46,
+    "mode": "instant"
+  },
+  {
+    "text": "А-а, привет. Блин. Как у тебя дела?",
+    "raw_text": "А-а, привет. Блин. Как у тебя дела?",
+    "timestamp": "2026-09-06T00:17:30",
+    "duration": 9.1,
+    "mode": "instant"
+  },
+  {
+    "text": "Проверка.",
+    "raw_text": "Проверка.",
+    "timestamp": "2026-09-06T00:16:26",
+    "duration": 4.16,
+    "mode": "instant"
+  },
+  {
+    "text": "Saydo, привет! Как дела?",
+    "raw_text": "Сейда, привет! Как дела?",
+    "timestamp": "2026-09-06T00:16:18",
+    "duration": 3.02,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Седа. Как дела?",
+    "raw_text": "Привет, Седа. Как дела?",
+    "timestamp": "2026-09-06T00:09:38",
+    "duration": 2.26,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, ве.",
+    "raw_text": "Привет, ве.",
+    "timestamp": "2026-09-05T23:59:21",
+    "duration": 7.88,
+    "mode": "instant"
+  },
+  {
+    "text": "Мот Henspри.",
+    "raw_text": "Мот Henspри.",
+    "timestamp": "2026-09-05T23:59:13",
+    "duration": 6.68,
+    "mode": "instant"
+  },
+  {
+    "text": "Кенсфремонт",
+    "raw_text": "Кенсфремонт",
+    "timestamp": "2026-09-05T23:58:59",
+    "duration": 12.61,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Сыг, как дела?",
+    "raw_text": "Привет, Сыг, как дела?",
+    "timestamp": "2026-09-05T23:58:44",
+    "duration": 3.22,
+    "mode": "instant"
+  },
+  {
     "text": "Saydo, привет.",
     "raw_text": "Сейда, привет.",
     "timestamp": "2026-09-05T23:26:19",
