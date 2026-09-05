@@ -118,6 +118,6 @@ class UserDictionary:
 
         for source, replacement in corrections:
             pattern = re.compile(rf"(?<!\w){re.escape(source)}(?!\w)", re.IGNORECASE | re.UNICODE)
-            result = pattern.sub(lambda _: replacement, result)
+            result = pattern.sub(replacement, result)
 
         return result

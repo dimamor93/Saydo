@@ -3,9 +3,9 @@ from __future__ import annotations
 import multiprocessing as mp
 import queue
 import sys
+import tkinter as tk
 from pathlib import Path
 
-import tkinter as tk
 from PIL import Image, ImageTk
 
 

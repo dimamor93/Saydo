@@ -16,7 +16,6 @@ from app.ui.dashboard import SaydoDesktopUI
 from app.ui.overlay import SaydoOverlay
 from app.ui.tray import SaydoTray
 
-
 HOTKEY = "right ctrl"
 MODE = ProcessingMode.INSTANT
 
@@ -91,8 +90,6 @@ def main() -> None:
                         last_text = text
 
                         if hands_free:
-                            nonlocal hands_free_last_text_time
-                            hands_free_last_text_time = __import__("time").monotonic()
                             schedule_hands_free_timeout()
 
             except Exception as exc:
@@ -101,7 +98,6 @@ def main() -> None:
 
     # Hands-free state.
     hands_free = False
-    hands_free_last_text_time = 0.0
     hands_free_stop_timer: threading.Timer | None = None
 
     def stop_hands_free() -> None:
@@ -130,7 +126,6 @@ def main() -> None:
 
     def enable_hands_free() -> None:
         nonlocal hands_free
-        nonlocal hands_free_last_text_time
 
         if hands_free:
             print("[Saydo] Hands-free already active.")
@@ -139,7 +134,6 @@ def main() -> None:
             return
 
         hands_free = True
-        hands_free_last_text_time = 0.0
 
         print("[Saydo] Hands-free enabled.")
 
@@ -367,3 +361,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

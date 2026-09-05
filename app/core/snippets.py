@@ -123,6 +123,6 @@ class SnippetStore:
                 rf"(?<!\w){re.escape(trigger)}(?!\w)",
                 re.IGNORECASE | re.UNICODE,
             )
-            result = pattern.sub(lambda _match: replacement, result)
+            result = pattern.sub(replacement, result)
 
         return result

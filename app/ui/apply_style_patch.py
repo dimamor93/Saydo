@@ -1,5 +1,5 @@
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 path = Path("app/ui/dashboard.py")
 if not path.exists():

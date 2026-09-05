@@ -6,7 +6,7 @@ from app.runtime import configure_nvidia_runtime
 
 configure_nvidia_runtime()
 
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel  # noqa: E402
 
 
 class LocalWhisperProvider:

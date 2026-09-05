@@ -1,7 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
-import os
 import queue
 import re
 import sys
@@ -10,15 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
-
-from app.core.dictionary import UserDictionary
-from app.core.snippets import SnippetStore
-from app.core.style import StyleStore
-from app.llm.hardware import has_cuda_gpu
-from app.llm.ollama import OllamaService
-from app.llm.settings import LLMSettingsStore
-from PySide6.QtGui import QFont, QIcon, QPixmap, QPalette
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -29,12 +21,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QPushButton,
     QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
@@ -42,6 +34,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.dictionary import UserDictionary
+from app.core.snippets import SnippetStore
+from app.core.style import StyleStore
+from app.llm.hardware import has_cuda_gpu
+from app.llm.ollama import OllamaService
+from app.llm.settings import LLMSettingsStore
 
 APP_NAME = "Saydo"
 ACCENT = "#6C63FF"
@@ -2085,7 +2083,7 @@ class MainWindow(QMainWindow):
             if (i2 - i1) != (j2 - j1):
                 continue
 
-            for old, new in zip(old_words[i1:i2], new_words[j1:j2]):
+            for old, new in zip(old_words[i1:i2], new_words[j1:j2], strict=False):
                 if old.casefold() == new.casefold():
                     continue
 
@@ -2597,3 +2595,4 @@ class MainWindow(QMainWindow):
         # in the system tray and continues listening for the global hotkey.
         event.ignore()
         self.hide()
+

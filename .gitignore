@@ -4,3 +4,20 @@ __pycache__/
 *.log
 .env
 models/
+
+# Local application data
+data/history.json
+data/settings.json
+data/dictionary.json
+data/snippets.json
+data/styles.json
+
+# Local/editor files
+*.backup
+*.backup2
+*.style_backup
+.vscode/
+.idea/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

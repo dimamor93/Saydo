@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import difflib
 import re
@@ -50,7 +50,7 @@ class DictionaryLearner:
             if (i2 - i1) != (j2 - j1):
                 continue
 
-            for old, new in zip(old_words[i1:i2], new_words[j1:j2]):
+            for old, new in zip(old_words[i1:i2], new_words[j1:j2], strict=False):
                 if old.casefold() != new.casefold():
                     candidates.append((old, new))
 
@@ -65,3 +65,4 @@ class DictionaryLearner:
             unique.append((source, replacement))
 
         return unique
+

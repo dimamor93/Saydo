@@ -6,8 +6,8 @@ import subprocess
 import tempfile
 import warnings
 import wave
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 # Suppress known harmless warnings before importing GigaAM/PyAnnote.
 warnings.filterwarnings(
@@ -20,10 +20,10 @@ warnings.filterwarnings(
     message=r"TensorFloat-32.*",
 )
 
-import gigaam
-import torch
+import gigaam  # noqa: E402
+import torch  # noqa: E402
 
-from app.runtime import configure_nvidia_runtime
+from app.runtime import configure_nvidia_runtime  # noqa: E402
 
 
 class LocalGigaAMProvider:
@@ -139,13 +139,12 @@ class LocalGigaAMProvider:
         to avoid TorchCodec file decoding on Windows.
         """
 
-        from torch.utils.data import DataLoader
-
-        from gigaam.inference import (
+        from gigaam.inference import (  # noqa: E402
             AudioDataset,
             get_pipeline,
         )
-        from gigaam.preprocess import load_audio
+        from gigaam.preprocess import load_audio  # noqa: E402
+        from torch.utils.data import DataLoader
 
         # Load audio directly into a tensor.
         audio = load_audio(str(wav_path))
