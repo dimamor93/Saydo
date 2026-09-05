@@ -13,17 +13,17 @@ class TextInjector:
         if not text:
             return
 
-        previous_clipboard = pyperclip.paste()
-
         try:
             pyperclip.copy(text)
 
             time.sleep(0.05)
             keyboard.press_and_release("ctrl+v")
-            time.sleep(0.1)
 
-        finally:
-            try:
-                pyperclip.copy(previous_clipboard)
-            except Exception:
-                pass
+            # Keep the injected text in the clipboard.
+            # This makes failed/unavailable insertion recoverable.
+            time.sleep(0.05)
+
+        except Exception as exc:
+            print(f"[Saydo] Text injection error: {exc}")
+            # Do not overwrite the clipboard here.
+            # If pyperclip.copy() succeeded, the recognized text remains available.
