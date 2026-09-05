@@ -13,6 +13,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
 
 from app.core.dictionary import UserDictionary
+from app.core.snippets import SnippetStore
 from PySide6.QtGui import QFont, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -418,6 +419,7 @@ class MainWindow(QMainWindow):
         # file. Keeping a UI-side instance here avoids coupling the window to
         # the desktop controller while still sharing all learned entries.
         self._dictionary = UserDictionary()
+        self._snippets = SnippetStore()
         self.allow_close = False
         self.hotkey = hotkey
         self.mode = mode
@@ -581,11 +583,7 @@ class MainWindow(QMainWindow):
         self._pages["history"] = self._history_page()
         self._pages["insights"] = self._insights_page()
         self._pages["dictionary"] = self._dictionary_page()
-        self._pages["snippets"] = self._simple_page(
-            "Сниппеты",
-            "Готовые фразы для повторяющихся задач. Позже привяжем их к горячим клавишам.",
-            "Создать сниппет",
-        )
+        self._pages["snippets"] = self._snippets_page()
         self._pages["style"] = self._simple_page(
             "Стиль",
             "Настройте, как Saydo форматирует вашу речь: обычный текст, деловой стиль или более свободная подача.",
@@ -736,6 +734,225 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return page
 
+    def _snippets_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        add_card = self._card()
+        add_layout = QVBoxLayout(add_card)
+        add_layout.setContentsMargins(18, 16, 18, 16)
+        add_layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        title = QLabel("Новый сниппет")
+        title.setObjectName("SectionTitle")
+        header.addWidget(title)
+        header.addStretch()
+        add_layout.addLayout(header)
+
+        self.snippet_name_input = QLineEdit()
+        self.snippet_name_input.setPlaceholderText("Название")
+        self.snippet_name_input.setObjectName("Search")
+
+        self.snippet_trigger_input = QLineEdit()
+        self.snippet_trigger_input.setPlaceholderText("Фраза-триггер")
+        self.snippet_trigger_input.setObjectName("Search")
+
+        self.snippet_text_input = QPlainTextEdit()
+        self.snippet_text_input.setPlaceholderText("Текст сниппета…")
+        self.snippet_text_input.setObjectName("SnippetEditor")
+        self.snippet_text_input.setFixedHeight(96)
+
+        add_layout.addWidget(self.snippet_name_input)
+        add_layout.addWidget(self.snippet_trigger_input)
+        add_layout.addWidget(self.snippet_text_input)
+
+        add_button = QPushButton("Добавить")
+        add_button.setObjectName("PrimaryButton")
+        add_button.setCursor(Qt.PointingHandCursor)
+        add_button.setFixedWidth(120)
+        add_button.clicked.connect(self._add_snippet)
+        add_layout.addWidget(add_button, 0, Qt.AlignRight)
+
+        layout.addWidget(add_card)
+
+        self.snippet_list = QListWidget()
+        self.snippet_list.setObjectName("HistoryList")
+        self.snippet_list.setSpacing(8)
+        layout.addWidget(self.snippet_list, 1)
+
+        return page
+
+    def _add_snippet(self) -> None:
+        try:
+            self._snippets.add(
+                self.snippet_name_input.text(),
+                self.snippet_trigger_input.text(),
+                self.snippet_text_input.toPlainText(),
+            )
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Не удалось добавить",
+                "Укажите фразу-триггер и текст сниппета.",
+            )
+            return
+
+        self.snippet_name_input.clear()
+        self.snippet_trigger_input.clear()
+        self.snippet_text_input.clear()
+        self._refresh_snippets()
+
+    def _refresh_snippets(self) -> None:
+        if not hasattr(self, "snippet_list"):
+            return
+
+        self.snippet_list.clear()
+        entries = self._snippets.load()
+
+        for index, entry in enumerate(entries):
+            item = QListWidgetItem()
+            widget = self._snippet_card(entry, index)
+            item.setSizeHint(widget.sizeHint())
+            item.setData(Qt.UserRole, index)
+            self.snippet_list.addItem(item)
+            self.snippet_list.setItemWidget(item, widget)
+
+    def _snippet_card(self, entry: dict[str, str], index: int) -> QFrame:
+        card = self._card()
+        card.setMinimumHeight(92)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 12, 12, 12)
+        layout.setSpacing(5)
+
+        top = QHBoxLayout()
+        name = QLabel(entry.get("name") or entry.get("trigger", ""))
+        name.setObjectName("HistoryText")
+        name.setStyleSheet("font-weight: 650;")
+        top.addWidget(name, 1)
+
+        edit = QPushButton("✎")
+        edit.setObjectName("IconButton")
+        edit.setFixedSize(40, 40)
+        edit.setToolTip("Редактировать")
+        edit.clicked.connect(
+            lambda checked=False, i=index: self._edit_snippet(i)
+        )
+
+        delete = QPushButton("×")
+        delete.setObjectName("IconButton")
+        delete.setFixedSize(40, 40)
+        delete.setToolTip("Удалить")
+        delete.clicked.connect(
+            lambda checked=False, i=index: self._delete_snippet(i)
+        )
+
+        top.addWidget(edit)
+        top.addWidget(delete)
+        layout.addLayout(top)
+
+        trigger = QLabel(f"Триггер: {entry.get('trigger', '')}")
+        trigger.setObjectName("TimeLabel")
+        layout.addWidget(trigger)
+
+        preview = entry.get("text", "").replace("\n", " ")
+        if len(preview) > 180:
+            preview = preview[:177] + "…"
+        body = QLabel(preview)
+        body.setObjectName("MutedText")
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        return card
+
+    def _edit_snippet(self, index: int) -> None:
+        entries = self._snippets.load()
+        if not 0 <= index < len(entries):
+            return
+
+        entry = entries[index]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Редактировать сниппет")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(460)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(10)
+
+        title = QLabel("Редактировать сниппет")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        name = QLineEdit(entry.get("name", ""))
+        name.setPlaceholderText("Название")
+        name.setObjectName("Search")
+        trigger = QLineEdit(entry.get("trigger", ""))
+        trigger.setPlaceholderText("Фраза-триггер")
+        trigger.setObjectName("Search")
+        body = QPlainTextEdit()
+        body.setPlainText(entry.get("text", ""))
+        body.setPlaceholderText("Текст сниппета…")
+        body.setObjectName("SnippetEditor")
+        body.setMinimumHeight(130)
+
+        layout.addWidget(name)
+        layout.addWidget(trigger)
+        layout.addWidget(body)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton("Отмена")
+        cancel.setObjectName("ThemeButton")
+        save = QPushButton("Сохранить")
+        save.setObjectName("PrimaryButton")
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+
+        cancel.clicked.connect(dialog.reject)
+
+        def save_changes() -> None:
+            try:
+                self._snippets.update(
+                    index,
+                    name.text(),
+                    trigger.text(),
+                    body.toPlainText(),
+                )
+            except ValueError:
+                QMessageBox.warning(
+                    dialog,
+                    "Не удалось сохранить",
+                    "Укажите фразу-триггер и текст сниппета.",
+                )
+                return
+            dialog.accept()
+
+        save.clicked.connect(save_changes)
+
+        if dialog.exec() == QDialog.Accepted:
+            self._refresh_snippets()
+
+    def _delete_snippet(self, index: int) -> None:
+        entries = self._snippets.load()
+        if not 0 <= index < len(entries):
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Удалить сниппет?",
+            f"Удалить «{entries[index].get('name') or entries[index].get('trigger')}»?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self._snippets.delete(index)
+            self._refresh_snippets()
+
     def _simple_page(self, title: str, description: str, action: str) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -879,6 +1096,7 @@ class MainWindow(QMainWindow):
         self._refresh_stats(entries)
         self._refresh_recent(entries)
         self._refresh_dictionary()
+        self._refresh_snippets()
         if hasattr(self, "history_list"):
             self._refresh_history(entries)
         if hasattr(self, "insights_summary"):
@@ -1439,6 +1657,16 @@ class MainWindow(QMainWindow):
         #HistoryEditor {{
             min-height: 0px;
             max-height: 44px;
+        }}
+        #SnippetEditor {{
+            background: {c["card_alt"]};
+            border: 1px solid {c["border"]};
+            border-radius: 10px;
+            padding: 9px 12px;
+            font-size: 13px;
+        }}
+        #SnippetEditor:focus {{
+            border-color: {ACCENT};
         }}
         #HistoryEditor:focus {{
             border-color: {ACCENT};

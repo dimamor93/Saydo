@@ -4,6 +4,7 @@ from typing import Protocol
 
 from app.core.dictionary import UserDictionary
 from app.core.modes import ProcessingMode
+from app.core.snippets import SnippetStore
 
 
 class TextProcessorProtocol(Protocol):
@@ -21,19 +22,24 @@ class ProcessingPipeline:
         mode: ProcessingMode = ProcessingMode.INSTANT,
         llm_provider: LLMProviderProtocol | None = None,
         dictionary: UserDictionary | None = None,
+        snippets: SnippetStore | None = None,
     ) -> None:
         self.text_processor = text_processor
         self.mode = mode
         self.llm_provider = llm_provider
         self.dictionary = dictionary or UserDictionary()
+        self.snippets = snippets or SnippetStore()
 
     def process(self, text: str) -> str:
         text = self.text_processor.process(text)
 
-        # The user dictionary is part of Instant processing: it is a fast,
-        # deterministic local correction layer and adds no LLM latency.
+        # Dictionary and snippets are deterministic local preprocessing.
+        # They run before either final Instant output or the LLM.
+        text = self.dictionary.apply(text)
+        text = self.snippets.apply(text)
+
         if self.mode == ProcessingMode.INSTANT:
-            return self.dictionary.apply(text)
+            return text
 
         if self.mode == ProcessingMode.AI:
             if self.llm_provider is None:
