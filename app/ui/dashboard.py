@@ -2300,8 +2300,18 @@ class MainWindow(QMainWindow):
     def _save_theme(self) -> None:
         path = data_path("settings.json")
         try:
+            settings = {}
+            if path.exists():
+                try:
+                    loaded = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        settings = loaded
+                except Exception:
+                    pass
+
+            settings["theme"] = self.current_theme
             path.write_text(
-                json.dumps({"theme": self.current_theme}, ensure_ascii=False, indent=2),
+                json.dumps(settings, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception:
