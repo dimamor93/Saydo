@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import threading
 
@@ -89,11 +89,80 @@ def main() -> None:
                         except Exception as exc:
                             print(f"[Saydo] UI live error: {exc}")
                         last_text = text
+
+                        if hands_free:
+                            nonlocal hands_free_last_text_time
+                            hands_free_last_text_time = __import__("time").monotonic()
+                            schedule_hands_free_timeout()
+
             except Exception as exc:
                 print(f"[Saydo] Realtime STT error: {exc}")
             live_stop_event.wait(0.5)
 
+    # Hands-free state.
+    hands_free = False
+    hands_free_last_text_time = 0.0
+    hands_free_stop_timer: threading.Timer | None = None
+
+    def stop_hands_free() -> None:
+        nonlocal hands_free_stop_timer
+
+        if hands_free_stop_timer is not None:
+            hands_free_stop_timer.cancel()
+            hands_free_stop_timer = None
+
+        if hands_free and recorder.is_recording:
+            print("[Saydo] Hands-free timeout.")
+            stop_recording()
+
+    def schedule_hands_free_timeout() -> None:
+        nonlocal hands_free_stop_timer
+
+        if hands_free_stop_timer is not None:
+            hands_free_stop_timer.cancel()
+
+        hands_free_stop_timer = threading.Timer(
+            2.0,
+            stop_hands_free,
+        )
+        hands_free_stop_timer.daemon = True
+        hands_free_stop_timer.start()
+
+    def enable_hands_free() -> None:
+        nonlocal hands_free
+        nonlocal hands_free_last_text_time
+
+        if hands_free:
+            print("[Saydo] Hands-free already active.")
+            stop_hands_free()
+            hands_free = False
+            return
+
+        hands_free = True
+        hands_free_last_text_time = 0.0
+
+        print("[Saydo] Hands-free enabled.")
+
+        if not recorder.is_recording:
+            start_recording()
+
+        schedule_hands_free_timeout()
+
+    def disable_hands_free() -> None:
+        nonlocal hands_free
+
+        if not hands_free:
+            return
+
+        hands_free = False
+
+        if hands_free_stop_timer is not None:
+            hands_free_stop_timer.cancel()
+
+        print("[Saydo] Hands-free disabled.")
+
     def shutdown() -> None:
+        disable_hands_free()
         print("[Saydo] Shutting down...")
 
         try:
@@ -143,8 +212,15 @@ def main() -> None:
             print(f"[Saydo] Recording error: {exc}")
 
     def stop_recording() -> None:
+        nonlocal hands_free
+
         if not recorder.is_recording:
             return
+
+        if hands_free:
+            hands_free = False
+            if hands_free_stop_timer is not None:
+                hands_free_stop_timer.cancel()
 
         try:
             live_stop_event.set()
@@ -257,6 +333,7 @@ def main() -> None:
     hotkey.start(
         on_press=start_recording,
         on_release=stop_recording,
+        on_double_tap=enable_hands_free,
     )
 
     print()
