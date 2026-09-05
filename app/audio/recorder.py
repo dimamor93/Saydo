@@ -7,77 +7,84 @@ import sounddevice as sd
 
 
 class AudioRecorder:
-    """Records microphone audio into memory."""
+    """Microphone recorder with thread-safe live audio snapshots."""
 
-    def __init__(self, sample_rate: int = 16_000) -> None:
+    def __init__(self, sample_rate: int = 16000) -> None:
         self.sample_rate = sample_rate
-        self._chunks: list[np.ndarray] = []
+        self.channels = 1
+
         self._stream: sd.InputStream | None = None
+        self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
-
-    def _callback(
-        self,
-        indata: np.ndarray,
-        frames: int,
-        time_info,
-        status,
-    ) -> None:
-        if status:
-            print(f"[Saydo] Audio status: {status}")
-
-        with self._lock:
-            self._chunks.append(indata[:, 0].copy())
-
-    def start(self) -> None:
-        if self.is_recording:
-            return
-
-        with self._lock:
-            self._chunks.clear()
-
-        try:
-            self._stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype="float32",
-                callback=self._callback,
-            )
-            self._stream.start()
-
-        except Exception:
-            self._stream = None
-            raise
-
-    def stop(self) -> np.ndarray:
-        if self._stream is None:
-            raise RuntimeError("Recording has not started.")
-
-        stream = self._stream
-        self._stream = None
-
-        try:
-            stream.stop()
-            stream.close()
-        finally:
-            with self._lock:
-                if not self._chunks:
-                    return np.array([], dtype=np.float32)
-
-                audio = np.concatenate(self._chunks).astype(
-                    np.float32,
-                    copy=False,
-                )
-                self._chunks.clear()
-
-        return audio
+        self._is_recording = False
 
     @property
     def is_recording(self) -> bool:
-        return self._stream is not None
+        return self._is_recording
 
     @property
     def duration(self) -> float:
         with self._lock:
             samples = sum(len(chunk) for chunk in self._chunks)
-
         return samples / self.sample_rate
+
+    def start(self) -> None:
+        if self._is_recording:
+            return
+
+        with self._lock:
+            self._chunks.clear()
+
+        self._stream = sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype="float32",
+            callback=self._callback,
+        )
+
+        self._stream.start()
+        self._is_recording = True
+
+    def stop(self) -> np.ndarray:
+        if not self._is_recording:
+            return np.array([], dtype=np.float32)
+
+        self._is_recording = False
+
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
+        with self._lock:
+            if not self._chunks:
+                return np.array([], dtype=np.float32)
+
+            audio = np.concatenate(self._chunks).astype(np.float32)
+            self._chunks.clear()
+
+        return audio
+
+    def snapshot(self) -> np.ndarray:
+        """
+        Return a copy of all audio recorded so far.
+
+        Safe to call from a background realtime transcription thread.
+        """
+        with self._lock:
+            if not self._chunks:
+                return np.array([], dtype=np.float32)
+
+            return np.concatenate(self._chunks).astype(np.float32)
+
+    def _callback(self, indata, frames, time, status) -> None:
+        if status:
+            print(f"[Saydo] Audio status: {status}")
+
+        if not self._is_recording:
+            return
+
+        chunk = indata[:, 0].copy()
+
+        with self._lock:
+            self._chunks.append(chunk)
