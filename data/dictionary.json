@@ -1,12 +1,42 @@
-{
-    "сейдер": "Saydo",
-    "сейда": "Saydo",
-    "сейдо": "Saydo",
-    "сейду": "Saydo",
-    "сейдр": "Saydo",
-    "Сейдер": "Saydo",
-    "Сейда": "Saydo",
-    "Сейдо": "Saydo",
-    "Сейду": "Saydo",
-    "Сейдр": "Saydo"
-}
+[
+  {
+    "type": "correction",
+    "source": "Саида",
+    "replacement": "Saydo"
+  },
+  {
+    "type": "correction",
+    "source": "Сведа",
+    "replacement": "Saydo"
+  },
+  {
+    "type": "correction",
+    "source": "Сейда",
+    "replacement": "Saydo"
+  },
+  {
+    "type": "correction",
+    "source": "Сида",
+    "replacement": "Saydo"
+  },
+  {
+    "type": "correction",
+    "source": "дила",
+    "replacement": "дела"
+  },
+  {
+    "type": "correction",
+    "source": "сейдер",
+    "replacement": "Saydo"
+  },
+  {
+    "type": "correction",
+    "source": "Сайда",
+    "replacement": "Saydo"
+  },
+  {
+    "type": "correction",
+    "source": "Сайдо",
+    "replacement": "Saydo"
+  }
+]

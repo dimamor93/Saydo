@@ -13,11 +13,13 @@ from typing import Any
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
 
 from app.core.dictionary import UserDictionary
-from PySide6.QtGui import QFont, QIcon, QPixmap
+from PySide6.QtGui import QFont, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -26,8 +28,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
-    QDialog,
-    QGraphicsDropShadowEffect,
     QMessageBox,
     QScrollArea,
     QSizePolicy,
@@ -93,9 +93,16 @@ class HistoryStore:
             except Exception:
                 return []
 
-    def add(self, text: str, duration: float, mode: str) -> None:
+    def add(
+        self,
+        text: str,
+        duration: float,
+        mode: str,
+        raw_text: str | None = None,
+    ) -> None:
         item = {
             "text": text,
+            "raw_text": raw_text if raw_text is not None else text,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "duration": round(duration, 2),
             "mode": mode,
@@ -146,35 +153,11 @@ class SaydoDesktopUI:
         self._window: MainWindow | None = None
         self._started = threading.Event()
         self._history = HistoryStore()
-
-    @staticmethod
-    def _asset_path(relative: str) -> Path:
-        """Resolve bundled assets for source and PyInstaller builds."""
-        if getattr(sys, "frozen", False):
-            base_dir = Path(sys._MEIPASS)
-        else:
-            base_dir = Path(__file__).resolve().parents[2]
-        return base_dir / relative
-
     def start(self) -> None:
         self._thread = threading.current_thread()
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setApplicationName(APP_NAME)
         self._app.setOrganizationName(APP_NAME)
-
-        # Use Saydo branding for the Windows taskbar/application icon too.
-        logo_path = self._asset_path("assets/saydo-logo.png")
-        if logo_path.exists():
-            self._app.setWindowIcon(QIcon(str(logo_path)))
-
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                    "Saydo.Desktop"
-                )
-            except Exception:
-                pass
 
         self._window = MainWindow(
             history=self._history,
@@ -202,8 +185,18 @@ class SaydoDesktopUI:
                 break
 
             if command == "history":
-                text, duration, mode = payload
-                self._history.add(text, duration, mode)
+                if len(payload) == 3:
+                    text, duration, mode = payload
+                    raw_text = text
+                else:
+                    text, duration, mode, raw_text = payload
+
+                self._history.add(
+                    text,
+                    duration,
+                    mode,
+                    raw_text=raw_text,
+                )
                 self._window.refresh()
             elif command == "live":
                 self._window.set_live_text(payload)
@@ -227,8 +220,24 @@ class SaydoDesktopUI:
     def show(self) -> None:
         self._queue.put(("show", None))
 
-    def add_transcription(self, text: str, duration: float, mode: str) -> None:
-        self._queue.put(("history", (text, duration, mode)))
+    def add_transcription(
+        self,
+        text: str,
+        duration: float,
+        mode: str,
+        raw_text: str | None = None,
+    ) -> None:
+        self._queue.put(
+            (
+                "history",
+                (
+                    text,
+                    duration,
+                    mode,
+                    raw_text if raw_text is not None else text,
+                ),
+            )
+        )
 
     def set_live_text(self, text: str) -> None:
         self._queue.put(("live", text))
@@ -243,10 +252,14 @@ class SaydoDesktopUI:
 class DictionaryPromptDialog(QDialog):
     """Themed, rounded confirmation dialog for dictionary learning."""
 
-    def __init__(self, parent: QWidget, candidates: list[tuple[str, str]], palette: dict[str, str]) -> None:
+    def __init__(
+        self,
+        parent: QWidget,
+        candidates: list[tuple[str, str]],
+        palette: dict[str, str],
+    ) -> None:
         super().__init__(parent)
         self._palette = palette
-        self.result = False
 
         self.setWindowTitle("Добавить в словарь?")
         self.setModal(True)
@@ -261,40 +274,40 @@ class DictionaryPromptDialog(QDialog):
         card.setObjectName("DictionaryDialogCard")
         card.setStyleSheet(f"""
             QFrame#DictionaryDialogCard {{
-                background: {palette['card']};
-                border: 1px solid {palette['border']};
+                background: {palette["card"]};
+                border: 1px solid {palette["border"]};
                 border-radius: 18px;
             }}
             QLabel#DialogTitle {{
-                color: {palette['text']};
+                color: {palette["text"]};
                 font-size: 18px;
                 font-weight: 700;
             }}
             QLabel#DialogSubtitle {{
-                color: {palette['muted']};
+                color: {palette["muted"]};
                 font-size: 13px;
             }}
             QFrame#PairCard {{
-                background: {palette['card_alt']};
-                border: 1px solid {palette['border']};
+                background: {palette["card_alt"]};
+                border: 1px solid {palette["border"]};
                 border-radius: 10px;
             }}
             QLabel#PairText {{
-                color: {palette['text']};
+                color: {palette["text"]};
                 font-size: 13px;
             }}
             QPushButton#DialogNo {{
                 background: transparent;
-                color: {palette['muted']};
-                border: 1px solid {palette['border']};
+                color: {palette["muted"]};
+                border: 1px solid {palette["border"]};
                 border-radius: 10px;
                 padding: 9px 18px;
                 font-size: 13px;
                 font-weight: 600;
             }}
             QPushButton#DialogNo:hover {{
-                background: {palette['hover']};
-                color: {palette['text']};
+                background: {palette["hover"]};
+                color: {palette["text"]};
             }}
             QPushButton#DialogYes {{
                 background: {ACCENT};
@@ -309,6 +322,7 @@ class DictionaryPromptDialog(QDialog):
                 background: {ACCENT_HOVER};
             }}
         """)
+
         shadow = QGraphicsDropShadowEffect(card)
         shadow.setBlurRadius(28)
         shadow.setOffset(0, 8)
@@ -323,7 +337,10 @@ class DictionaryPromptDialog(QDialog):
         title.setObjectName("DialogTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel("Saydo обнаружил исправление слова. Добавить его в ваш словарь?")
+        subtitle = QLabel(
+            "Saydo обнаружил исправление слова. "
+            "Добавить его в ваш словарь?"
+        )
         subtitle.setObjectName("DialogSubtitle")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -337,12 +354,23 @@ class DictionaryPromptDialog(QDialog):
 
             left = QLabel(source)
             left.setObjectName("PairText")
-            left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            left.setSizePolicy(
+                QSizePolicy.Expanding,
+                QSizePolicy.Preferred,
+            )
+
             arrow = QLabel("→")
-            arrow.setStyleSheet(f"color: {ACCENT}; font-size: 14px; font-weight: 700;")
+            arrow.setStyleSheet(
+                f"color: {ACCENT}; font-size: 14px; font-weight: 700;"
+            )
+
             right = QLabel(replacement)
             right.setObjectName("PairText")
-            right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            right.setSizePolicy(
+                QSizePolicy.Expanding,
+                QSizePolicy.Preferred,
+            )
+
             pair_layout.addWidget(left)
             pair_layout.addWidget(arrow)
             pair_layout.addWidget(right)
@@ -350,13 +378,16 @@ class DictionaryPromptDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
+
         no_btn = QPushButton("Нет")
         no_btn.setObjectName("DialogNo")
         no_btn.setCursor(Qt.PointingHandCursor)
+
         yes_btn = QPushButton("Да")
         yes_btn.setObjectName("DialogYes")
         yes_btn.setCursor(Qt.PointingHandCursor)
         yes_btn.setDefault(True)
+
         buttons.addWidget(no_btn)
         buttons.addWidget(yes_btn)
         layout.addLayout(buttons)
@@ -366,6 +397,7 @@ class DictionaryPromptDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+
         if self.parentWidget() is not None:
             parent = self.parentWidget()
             x = parent.x() + (parent.width() - self.width()) // 2
@@ -405,19 +437,7 @@ class MainWindow(QMainWindow):
     def _make_icon(self) -> QIcon:
         logo_path = self._asset_path("assets/saydo-logo.png")
         if logo_path.exists():
-            icon = QIcon()
-            # Explicit sizes improve rendering in the title bar and taskbar.
-            pixmap = QPixmap(str(logo_path))
-            for size in (16, 20, 24, 32, 48, 64, 128, 256):
-                icon.addPixmap(
-                    pixmap.scaled(
-                        size,
-                        size,
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation,
-                    )
-                )
-            return icon
+            return QIcon(str(logo_path))
         return QIcon()
 
     def _asset_path(self, relative: str) -> Path:
@@ -1084,7 +1104,11 @@ class MainWindow(QMainWindow):
             return False
 
         palette = self._palette_for_theme(self.current_theme)
-        dialog = DictionaryPromptDialog(self, candidates, palette)
+        dialog = DictionaryPromptDialog(
+            self,
+            candidates,
+            palette,
+        )
         return dialog.exec() == QDialog.Accepted
 
     def _save_edited_transcription(self, entry: dict[str, Any], edited: str) -> None:
@@ -1111,38 +1135,78 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
 
         add_card = self._card()
-        add_layout = QHBoxLayout(add_card)
+        add_layout = QVBoxLayout(add_card)
         add_layout.setContentsMargins(18, 16, 18, 16)
-        self.dictionary_input = QLineEdit()
-        self.dictionary_input.setPlaceholderText("Добавить слово или название…")
-        self.dictionary_input.setObjectName("Search")
-        add_layout.addWidget(self.dictionary_input, 1)
+        add_layout.setSpacing(10)
+
+        title = QLabel("Добавить исправление")
+        title.setObjectName("SectionTitle")
+        add_layout.addWidget(title)
+
+        fields = QHBoxLayout()
+        fields.setSpacing(10)
+
+        self.dictionary_source_input = QLineEdit()
+        self.dictionary_source_input.setPlaceholderText(
+            "Как Saydo распознаёт…"
+        )
+        self.dictionary_source_input.setObjectName("Search")
+
+        self.dictionary_replacement_input = QLineEdit()
+        self.dictionary_replacement_input.setPlaceholderText(
+            "Как должно быть…"
+        )
+        self.dictionary_replacement_input.setObjectName("Search")
+
+        fields.addWidget(self.dictionary_source_input, 1)
+        fields.addWidget(self.dictionary_replacement_input, 1)
+        add_layout.addLayout(fields)
+
         add_button = QPushButton("Добавить")
         add_button.setObjectName("PrimaryButton")
-        add_button.clicked.connect(self._add_dictionary_word)
-        add_layout.addWidget(add_button)
+        add_button.setCursor(Qt.PointingHandCursor)
+        add_button.clicked.connect(self._add_dictionary_correction)
+        add_button.setFixedWidth(120)
+        add_layout.addWidget(
+            add_button,
+            0,
+            Qt.AlignRight,
+        )
+
         layout.addWidget(add_card)
 
         self.dictionary_search = QLineEdit()
-        self.dictionary_search.setPlaceholderText("Поиск в словаре…")
+        self.dictionary_search.setPlaceholderText(
+            "Поиск в словаре…"
+        )
         self.dictionary_search.setObjectName("Search")
-        self.dictionary_search.textChanged.connect(self._filter_dictionary)
+        self.dictionary_search.textChanged.connect(
+            self._filter_dictionary
+        )
         layout.addWidget(self.dictionary_search)
 
         self.dictionary_list = QListWidget()
         self.dictionary_list.setObjectName("HistoryList")
         self.dictionary_list.setSpacing(5)
         layout.addWidget(self.dictionary_list, 1)
+
         return page
 
-    def _add_dictionary_word(self) -> None:
-        word = self.dictionary_input.text().strip()
-        if not word:
-            return
-        self._dictionary.add_word(word)
-        self.dictionary_input.clear()
-        self._refresh_dictionary()
+    def _add_dictionary_correction(self) -> None:
+        source = self.dictionary_source_input.text().strip()
+        replacement = self.dictionary_replacement_input.text().strip()
 
+        if not source or not replacement:
+            return
+
+        self._dictionary.add_correction(
+            source,
+            replacement,
+        )
+
+        self.dictionary_source_input.clear()
+        self.dictionary_replacement_input.clear()
+        self._refresh_dictionary()
     def _refresh_dictionary(self) -> None:
         if not hasattr(self, "dictionary_list"):
             return
@@ -1247,8 +1311,7 @@ class MainWindow(QMainWindow):
             for key, button in self.theme_buttons.items():
                 button.setChecked(key == theme)
 
-        # The native Windows title bar does not inherit Qt's stylesheet,
-        # so update it explicitly every time the user changes the theme.
+        # Reapply native Windows titlebar colors after every theme change.
         self._apply_windows_titlebar()
 
     def _palette_for_theme(self, theme: str) -> dict[str, str]:

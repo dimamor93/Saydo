@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 import time
-from enum import Enum
 
 from app.audio.recorder import AudioRecorder
 from app.core.modes import ProcessingMode
@@ -21,12 +20,6 @@ HOTKEY = "right ctrl"
 MODE = ProcessingMode.INSTANT
 
 
-class SaydoState(str, Enum):
-    IDLE = "idle"
-    RECORDING = "recording"
-    PROCESSING = "processing"
-
-
 def main() -> None:
     print("[Saydo] Starting...")
 
@@ -43,57 +36,100 @@ def main() -> None:
 
     injector = TextInjector()
     hotkey = HotkeyManager(HOTKEY)
-    overlay = SaydoOverlay()
+
     desktop_ui = SaydoDesktopUI(
         hotkey=HOTKEY,
         mode=MODE.value,
     )
 
-    shutdown_event = threading.Event()
-    # Qt requires QApplication and its event loop to run in the process main thread.
-    # The previous UI implementation started PySide6 in a worker thread, which can
-    # cause a hard GUI freeze/deadlock on Windows. The desktop UI is started below
-    # on the main thread; the audio/hotkey work remains in background threads.
+    overlay = SaydoOverlay()
 
-    overlay_thread = threading.Thread(
-        target=overlay.start,
-        name="SaydoOverlay",
-        daemon=True,
-    )
-    overlay_thread.start()
-
-    while overlay._root is None:
-        time.sleep(0.01)
-
-    state_lock = threading.Lock()
-    state = SaydoState.IDLE
     live_stop_event = threading.Event()
     live_thread: threading.Thread | None = None
+    hands_free = False
 
-    def get_state() -> SaydoState:
-        with state_lock:
-            return state
+    # Hands-free ends based on realtime STT activity, not microphone RMS.
+    stt_activity_lock = threading.Lock()
+    last_stt_text = ""
+    last_stt_change = 0.0
+    hands_free_lock = threading.Lock()
+    silence_thread: threading.Thread | None = None
+    SILENCE_TIMEOUT = 2.0
+    SILENCE_RMS_THRESHOLD = 0.008
 
-    def set_state(new_state: SaydoState) -> None:
-        nonlocal state
-        with state_lock:
-            state = new_state
-        desktop_ui.set_runtime_state(new_state.value)
+    def realtime_worker() -> None:
+        nonlocal last_stt_text, last_stt_change
+
+        last_text = ""
+
+        while not live_stop_event.is_set() and recorder.is_recording:
+            try:
+                audio_snapshot = recorder.snapshot()
+
+                if len(audio_snapshot) >= int(0.8 * recorder.sample_rate):
+                    text = stt.transcribe_realtime(audio_snapshot)
+
+                    if text:
+                        with stt_activity_lock:
+                            # A changed realtime transcript means the STT
+                            # engine has something new to transcribe.
+                            if text != last_stt_text:
+                                last_stt_text = text
+                                last_stt_change = time.monotonic()
+
+                        if text != last_text:
+                            print(f"[Saydo] LIVE STT: {text}")
+
+                            try:
+                                overlay.update_text(text)
+                            except Exception as exc:
+                                print(f"[Saydo] Overlay live error: {exc}")
+
+                            try:
+                                desktop_ui.set_live_text(text)
+                            except Exception as exc:
+                                print(f"[Saydo] UI live error: {exc}")
+
+                            last_text = text
+
+            except Exception as exc:
+                print(f"[Saydo] Realtime STT error: {exc}")
+
+            live_stop_event.wait(0.5)
+
+    def hands_free_worker() -> None:
+        nonlocal hands_free
+
+        """Stop hands-free after 2 seconds without new realtime STT text."""
+
+        # Give realtime STT time to produce the first transcription.
+        while recorder.is_recording:
+            with hands_free_lock:
+                if not hands_free:
+                    return
+
+            with stt_activity_lock:
+                has_transcription = bool(last_stt_text)
+                last_change = last_stt_change
+
+            if has_transcription and last_change > 0:
+                if time.monotonic() - last_change >= SILENCE_TIMEOUT:
+                    print(
+                        "[Saydo] Hands-free: no new transcription for 2s, stopping."
+                    )
+
+                    with hands_free_lock:
+                        if not hands_free:
+                            return
+                        hands_free = False
+
+                    stop_recording()
+                    return
+
+            time.sleep(0.10)
 
     def shutdown() -> None:
-        shutdown_event.set()
-        live_stop_event.set()
-
-        try:
-            if recorder.is_recording:
-                recorder.stop()
-        except Exception:
-            pass
-
-        try:
-            overlay.hide()
-        except Exception:
-            pass
+        print("[Saydo] Shutting down...")
 
         try:
             hotkey.stop()
@@ -101,175 +137,242 @@ def main() -> None:
             pass
 
         try:
-            tray.stop()
+            overlay.close()
         except Exception:
             pass
 
-        desktop_ui.stop()
-
-    tray = SaydoTray(on_show=desktop_ui.show, on_exit=shutdown)
-    tray.start()
-
-    desktop_ui.set_runtime_state(SaydoState.IDLE.value)
-
-    print()
-    print("[Saydo] Ready")
-    print(f"[Saydo] Mode: {MODE.value}")
-    print(f"[Saydo] Hold '{HOTKEY}', speak, then release.")
-    print("[Saydo] Saydo is running in the system tray.")
-    print("[Saydo] Press Esc or use the tray menu to exit.")
-    print()
-
-    def realtime_worker() -> None:
-        last_text = ""
-        while not live_stop_event.is_set():
-            try:
-                if get_state() != SaydoState.RECORDING:
-                    break
-
-                audio = recorder.snapshot()
-
-                if len(audio) < int(0.8 * recorder.sample_rate):
-                    time.sleep(0.3)
-                    continue
-
-                text = stt.transcribe_realtime(audio)
-
-                if text and text != last_text:
-                    overlay.update_text(text)
-                    desktop_ui.set_live_text(text)
-                    last_text = text
-
-            except Exception as exc:
-                print(f"\n[Saydo] Realtime error: {exc}")
-                break
-
-            time.sleep(0.5)
+        try:
+            desktop_ui.stop()
+        except Exception:
+            pass
 
     def start_recording() -> None:
-        nonlocal live_thread
+        nonlocal hands_free, last_stt_text, last_stt_change
 
-        if get_state() != SaydoState.IDLE:
+        if recorder.is_recording:
             return
 
         try:
+            with hands_free_lock:
+                hands_free = False
+
+            with stt_activity_lock:
+                last_stt_text = ""
+                last_stt_change = 0.0
+
             recorder.start()
-            set_state(SaydoState.RECORDING)
             live_stop_event.clear()
 
-            overlay.show_recording()
-            desktop_ui.set_live_text("Слушаю…")
+            print("[Saydo] Recording...")
 
+            nonlocal live_thread
             live_thread = threading.Thread(
                 target=realtime_worker,
-                name="SaydoRealtime",
+                name="SaydoRealtimeSTT",
                 daemon=True,
             )
             live_thread.start()
 
-            print("[Saydo] Recording...")
+            try:
+                overlay.show_recording()
+            except Exception as exc:
+                print(f"[Saydo] Overlay show error: {exc}")
+
+            try:
+                desktop_ui.set_runtime_state("recording")
+            except Exception:
+                pass
 
         except Exception as exc:
-            set_state(SaydoState.IDLE)
             print(f"[Saydo] Recording error: {exc}")
 
+    def enable_hands_free() -> None:
+        nonlocal hands_free, silence_thread
+
+        if not recorder.is_recording:
+            start_recording()
+
+        with hands_free_lock:
+            hands_free = True
+
+        print("[Saydo] Hands-free mode enabled.")
+        silence_thread = threading.Thread(
+            target=hands_free_worker,
+            name="SaydoHandsFree",
+            daemon=True,
+        )
+        silence_thread.start()
+
+    def force_stop_recording() -> None:
+        """Force-stop the current hands-free recording via Right Ctrl."""
+        nonlocal hands_free
+        with hands_free_lock:
+            was_hands_free = hands_free
+            hands_free = False
+
+        if was_hands_free and recorder.is_recording:
+            print("[Saydo] Hands-free: manual stop.")
+            stop_recording()
+
     def stop_recording() -> None:
-        if get_state() != SaydoState.RECORDING:
+        nonlocal hands_free
+
+        if not recorder.is_recording:
             return
 
-        set_state(SaydoState.PROCESSING)
-        live_stop_event.set()
+        with hands_free_lock:
+            if hands_free:
+                return
+            hands_free = False
 
         try:
+            live_stop_event.set()
+            if live_thread is not None and live_thread is not threading.current_thread():
+                live_thread.join(timeout=0.2)
+
             audio = recorder.stop()
+
+            try:
+                overlay.update_text("")
+            except Exception:
+                pass
+
+            try:
+                desktop_ui.set_runtime_state("processing")
+            except Exception:
+                pass
 
             if len(audio) == 0:
                 print("[Saydo] No audio captured.")
-                overlay.hide()
-                desktop_ui.set_live_text("")
-                set_state(SaydoState.IDLE)
                 return
 
             duration = len(audio) / recorder.sample_rate
-            print(f"[Saydo] Recorded {duration:.2f} seconds.")
-            print("[Saydo] Final transcription...")
 
-            text = stt.transcribe(audio)
+            print(
+                f"[Saydo] Recorded "
+                f"{duration:.2f} seconds."
+            )
 
-            if not text:
+            print("[Saydo] Transcribing...")
+
+            raw_text = stt.transcribe(audio)
+
+            if not raw_text:
                 print("[Saydo] Nothing recognized.")
-                overlay.hide()
-                desktop_ui.set_live_text("")
-                set_state(SaydoState.IDLE)
                 return
 
-            print(f"[Saydo] STT: {text}")
-            raw_text = text
+            print(f"[Saydo] STT: {raw_text}")
 
             try:
-                text = pipeline.process(text)
+                text = pipeline.process(raw_text)
             except Exception as exc:
                 print(f"[Saydo] Processing error: {exc}")
-                overlay.hide()
-                desktop_ui.set_live_text("")
-                set_state(SaydoState.IDLE)
                 return
 
             if not text:
                 print("[Saydo] Nothing to insert.")
-                overlay.hide()
-                desktop_ui.set_live_text("")
-                set_state(SaydoState.IDLE)
                 return
 
             print(f"[Saydo] Final: {text}")
 
-            desktop_ui.set_live_text(text)
-            desktop_ui.add_transcription(text, duration, MODE.value, raw_text=raw_text)
-            injector.inject(text)
+            # ---------------------------------------------------------
+            # CRITICAL ORDER:
+            #
+            # First deliver the final text to the active application.
+            # UI/history/dictionary logic must never be able to prevent
+            # the actual dictation from being inserted.
+            # ---------------------------------------------------------
 
-            time.sleep(0.4)
-            overlay.hide()
-            desktop_ui.set_live_text("")
-            set_state(SaydoState.IDLE)
+            try:
+                injector.inject(text)
+                print("[Saydo] Text injected.")
+            except Exception as exc:
+                print(f"[Saydo] Injection error: {exc}")
+
+            # Update UI/history only after the main operation succeeded.
+            try:
+                desktop_ui.set_live_text(text)
+            except Exception as exc:
+                print(f"[Saydo] UI live text error: {exc}")
+
+            try:
+                desktop_ui.add_transcription(
+                    text,
+                    duration,
+                    MODE.value,
+                    raw_text=raw_text,
+                )
+            except Exception as exc:
+                print(f"[Saydo] History error: {exc}")
 
         except Exception as exc:
             print(f"[Saydo] Error: {exc}")
 
+        finally:
             try:
-                recorder.stop()
+                overlay.hide()
             except Exception:
                 pass
 
-            overlay.hide()
-            desktop_ui.set_live_text("")
-            set_state(SaydoState.IDLE)
+            try:
+                desktop_ui.set_runtime_state("idle")
+            except Exception:
+                pass
 
-    hotkey.start(
-        on_press=start_recording,
-        on_release=stop_recording,
-    )
-
-    def wait_for_hotkey_exit() -> None:
-        try:
-            hotkey.wait_for_exit()
-        finally:
-            shutdown_event.set()
-
-    exit_thread = threading.Thread(
-        target=wait_for_hotkey_exit,
-        name="SaydoHotkeyExit",
+    # Overlay runs independently from the Qt dashboard.
+    overlay_thread = threading.Thread(
+        target=overlay.start,
+        name="SaydoOverlay",
         daemon=True,
     )
-    exit_thread.start()
+    overlay_thread.start()
 
-    # QApplication must own the main thread. This call blocks in Qt's event loop
-    # while hotkey/audio workers continue independently.
+    tray = SaydoTray(
+        on_show=desktop_ui.show,
+        on_exit=shutdown,
+    )
+    tray.start()
+
+    def handle_press() -> None:
+        with hands_free_lock:
+            active = hands_free
+        if active:
+            force_stop_recording()
+        else:
+            start_recording()
+
+    hotkey.start(
+        on_press=handle_press,
+        on_release=stop_recording,
+        on_double_tap=enable_hands_free,
+    )
+
+    print()
+    print("[Saydo] Ready")
+    print(f"[Saydo] Mode: {MODE.value}")
+    print(f"[Saydo] Hold '{HOTKEY}' to dictate, or tap it twice for hands-free mode. Press it once in hands-free to stop.")
+    print("[Saydo] Press Esc to exit.")
+    print()
+
     try:
+        # Qt must run on the main thread.
         desktop_ui.start()
+
+    except KeyboardInterrupt:
+        print("[Saydo] Interrupted.")
+
+    except Exception as exc:
+        print(f"[Saydo] Desktop UI error: {exc}")
+
     finally:
-        shutdown_event.set()
         shutdown()
+
+        try:
+            tray.stop()
+        except Exception:
+            pass
+
+    print("[Saydo] Exiting...")
 
 
 if __name__ == "__main__":
