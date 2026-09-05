@@ -69,6 +69,7 @@ def main() -> None:
 
     live_stop_event = threading.Event()
     live_thread: threading.Thread | None = None
+    recording_stopping = False
 
     def realtime_worker() -> None:
         last_text = ""
@@ -161,18 +162,24 @@ def main() -> None:
 
         try:
             hotkey.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[Saydo] Hotkey shutdown error: {exc}")
+
+        if recorder.is_recording:
+            try:
+                stop_recording()
+            except Exception as exc:
+                print(f"[Saydo] Recording shutdown error: {exc}")
 
         try:
             overlay.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[Saydo] Overlay shutdown error: {exc}")
 
         try:
             desktop_ui.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[Saydo] UI shutdown error: {exc}")
 
     def start_recording() -> None:
         if recorder.is_recording:
@@ -206,10 +213,15 @@ def main() -> None:
             print(f"[Saydo] Recording error: {exc}")
 
     def stop_recording() -> None:
-        nonlocal hands_free
+        nonlocal hands_free, recording_stopping
+
+        if recording_stopping:
+            return
 
         if not recorder.is_recording:
             return
+
+        recording_stopping = True
 
         if hands_free:
             hands_free = False
@@ -300,6 +312,8 @@ def main() -> None:
             print(f"[Saydo] Error: {exc}")
 
         finally:
+            recording_stopping = False
+
             try:
                 overlay.hide()
             except Exception:

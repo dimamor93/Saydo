@@ -35,14 +35,23 @@ class AudioRecorder:
         with self._lock:
             self._chunks.clear()
 
-        self._stream = sd.InputStream(
+        stream = sd.InputStream(
             samplerate=self.sample_rate,
             channels=self.channels,
             dtype="float32",
             callback=self._callback,
         )
 
-        self._stream.start()
+        try:
+            stream.start()
+        except Exception:
+            try:
+                stream.close()
+            except Exception:
+                pass
+            raise
+
+        self._stream = stream
         self._is_recording = True
 
     def stop(self) -> np.ndarray:
