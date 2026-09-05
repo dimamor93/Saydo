@@ -204,6 +204,7 @@ def main() -> None:
                 return
 
             print(f"[Saydo] STT: {text}")
+            raw_text = text
 
             try:
                 text = pipeline.process(text)
@@ -224,7 +225,7 @@ def main() -> None:
             print(f"[Saydo] Final: {text}")
 
             desktop_ui.set_live_text(text)
-            desktop_ui.add_transcription(text, duration, MODE.value)
+            desktop_ui.add_transcription(text, duration, MODE.value, raw_text=raw_text)
             injector.inject(text)
 
             time.sleep(0.4)

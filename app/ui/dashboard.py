@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
 
 from app.core.dictionary import UserDictionary
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -25,6 +26,9 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QDialog,
+    QGraphicsDropShadowEffect,
+    QMessageBox,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
@@ -105,6 +109,26 @@ class HistoryStore:
                 encoding="utf-8",
             )
 
+    def update(self, target: dict[str, Any], text: str) -> None:
+        """Persist an edited transcription."""
+        with self._lock:
+            entries = self.load()
+            for entry in entries:
+                if entry is target:
+                    entry["text"] = text
+                    break
+            else:
+                # Fallback for a copied dict: match stable timestamp.
+                timestamp = target.get("timestamp")
+                for entry in entries:
+                    if timestamp and entry.get("timestamp") == timestamp:
+                        entry["text"] = text
+                        break
+            self.path.write_text(
+                json.dumps(entries, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
 
 class _Bridge(QObject):
     command = Signal(object)
@@ -122,11 +146,35 @@ class SaydoDesktopUI:
         self._window: MainWindow | None = None
         self._started = threading.Event()
         self._history = HistoryStore()
+
+    @staticmethod
+    def _asset_path(relative: str) -> Path:
+        """Resolve bundled assets for source and PyInstaller builds."""
+        if getattr(sys, "frozen", False):
+            base_dir = Path(sys._MEIPASS)
+        else:
+            base_dir = Path(__file__).resolve().parents[2]
+        return base_dir / relative
+
     def start(self) -> None:
         self._thread = threading.current_thread()
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setApplicationName(APP_NAME)
         self._app.setOrganizationName(APP_NAME)
+
+        # Use Saydo branding for the Windows taskbar/application icon too.
+        logo_path = self._asset_path("assets/saydo-logo.png")
+        if logo_path.exists():
+            self._app.setWindowIcon(QIcon(str(logo_path)))
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "Saydo.Desktop"
+                )
+            except Exception:
+                pass
 
         self._window = MainWindow(
             history=self._history,
@@ -192,6 +240,139 @@ class SaydoDesktopUI:
         self._queue.put(("stop", None))
 
 
+class DictionaryPromptDialog(QDialog):
+    """Themed, rounded confirmation dialog for dictionary learning."""
+
+    def __init__(self, parent: QWidget, candidates: list[tuple[str, str]], palette: dict[str, str]) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self.result = False
+
+        self.setWindowTitle("Добавить в словарь?")
+        self.setModal(True)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedWidth(440)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        card = QFrame()
+        card.setObjectName("DictionaryDialogCard")
+        card.setStyleSheet(f"""
+            QFrame#DictionaryDialogCard {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 18px;
+            }}
+            QLabel#DialogTitle {{
+                color: {palette['text']};
+                font-size: 18px;
+                font-weight: 700;
+            }}
+            QLabel#DialogSubtitle {{
+                color: {palette['muted']};
+                font-size: 13px;
+            }}
+            QFrame#PairCard {{
+                background: {palette['card_alt']};
+                border: 1px solid {palette['border']};
+                border-radius: 10px;
+            }}
+            QLabel#PairText {{
+                color: {palette['text']};
+                font-size: 13px;
+            }}
+            QPushButton#DialogNo {{
+                background: transparent;
+                color: {palette['muted']};
+                border: 1px solid {palette['border']};
+                border-radius: 10px;
+                padding: 9px 18px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton#DialogNo:hover {{
+                background: {palette['hover']};
+                color: {palette['text']};
+            }}
+            QPushButton#DialogYes {{
+                background: {ACCENT};
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 9px 20px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton#DialogYes:hover {{
+                background: {ACCENT_HOVER};
+            }}
+        """)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("Добавить в словарь?")
+        title.setObjectName("DialogTitle")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Saydo обнаружил исправление слова. Добавить его в ваш словарь?")
+        subtitle.setObjectName("DialogSubtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        for source, replacement in candidates:
+            pair = QFrame()
+            pair.setObjectName("PairCard")
+            pair_layout = QHBoxLayout(pair)
+            pair_layout.setContentsMargins(14, 10, 14, 10)
+            pair_layout.setSpacing(10)
+
+            left = QLabel(source)
+            left.setObjectName("PairText")
+            left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            arrow = QLabel("→")
+            arrow.setStyleSheet(f"color: {ACCENT}; font-size: 14px; font-weight: 700;")
+            right = QLabel(replacement)
+            right.setObjectName("PairText")
+            right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            pair_layout.addWidget(left)
+            pair_layout.addWidget(arrow)
+            pair_layout.addWidget(right)
+            layout.addWidget(pair)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        no_btn = QPushButton("Нет")
+        no_btn.setObjectName("DialogNo")
+        no_btn.setCursor(Qt.PointingHandCursor)
+        yes_btn = QPushButton("Да")
+        yes_btn.setObjectName("DialogYes")
+        yes_btn.setCursor(Qt.PointingHandCursor)
+        yes_btn.setDefault(True)
+        buttons.addWidget(no_btn)
+        buttons.addWidget(yes_btn)
+        layout.addLayout(buttons)
+
+        no_btn.clicked.connect(self.reject)
+        yes_btn.clicked.connect(self.accept)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.parentWidget() is not None:
+            parent = self.parentWidget()
+            x = parent.x() + (parent.width() - self.width()) // 2
+            y = parent.y() + (parent.height() - self.height()) // 2
+            self.move(max(0, x), max(0, y))
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -218,11 +399,70 @@ class MainWindow(QMainWindow):
 
         self._build()
         self._load_theme()
+        self._apply_windows_titlebar()
         self.refresh()
 
     def _make_icon(self) -> QIcon:
-        # Avoid a hard dependency on image assets for the dashboard.
+        logo_path = self._asset_path("assets/saydo-logo.png")
+        if logo_path.exists():
+            icon = QIcon()
+            # Explicit sizes improve rendering in the title bar and taskbar.
+            pixmap = QPixmap(str(logo_path))
+            for size in (16, 20, 24, 32, 48, 64, 128, 256):
+                icon.addPixmap(
+                    pixmap.scaled(
+                        size,
+                        size,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                )
+            return icon
         return QIcon()
+
+    def _asset_path(self, relative: str) -> Path:
+        if getattr(sys, "frozen", False):
+            base = Path(sys._MEIPASS)
+        else:
+            base = Path(__file__).resolve().parents[2]
+        return base / relative
+
+    def _apply_windows_titlebar(self) -> None:
+        """Blend the native Windows title bar into the Saydo dark/light UI."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = wintypes.HWND(int(self.winId()))
+            dwmapi = ctypes.windll.dwmapi
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            DWMWA_CAPTION_COLOR = 35
+            DWMWA_TEXT_COLOR = 36
+
+            dark = self.current_theme == "dark" or (
+                self.current_theme == "system" and self._palette_for_theme("system") is DARK
+            )
+            enabled = wintypes.BOOL(1 if dark else 0)
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(enabled), ctypes.sizeof(enabled)
+            )
+
+            palette = self._palette_for_theme(self.current_theme)
+            rgb = palette["bg"].lstrip("#")
+            value = int(rgb, 16)
+            color = wintypes.DWORD(value)
+            text = palette["text"].lstrip("#")
+            text_value = wintypes.DWORD(int(text, 16))
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(color), ctypes.sizeof(color)
+            )
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_TEXT_COLOR, ctypes.byref(text_value), ctypes.sizeof(text_value)
+            )
+        except Exception:
+            pass
 
     def _build(self) -> None:
         root = QWidget()
@@ -241,12 +481,22 @@ class MainWindow(QMainWindow):
 
         brand = QHBoxLayout()
         brand.setContentsMargins(8, 4, 8, 18)
-        brand_icon = QLabel("◉")
+        brand.setSpacing(10)
+
+        brand_icon = QLabel()
         brand_icon.setObjectName("BrandIcon")
-        brand_icon.setFixedWidth(28)
+        brand_icon.setFixedSize(34, 34)
+        logo_path = self._asset_path("assets/saydo-logo.png")
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                brand_icon.setPixmap(
+                    pixmap.scaled(34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+        brand.addWidget(brand_icon)
+
         brand_name = QLabel("Saydo")
         brand_name.setObjectName("BrandName")
-        brand.addWidget(brand_icon)
         brand.addWidget(brand_name)
         brand.addStretch()
         side.addLayout(brand)
@@ -333,10 +583,12 @@ class MainWindow(QMainWindow):
         self.nav_buttons["dashboard"].setChecked(True)
 
     def _nav_button(self, key: str, icon: str, text: str) -> QPushButton:
-        button = QPushButton(f"  {icon}    {text}")
+        button = QPushButton(f"{icon}    {text}")
         button.setObjectName("NavButton")
         button.setCheckable(True)
         button.setCursor(Qt.PointingHandCursor)
+        button.setFixedHeight(42)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.nav_group.addButton(button)
         return button
 
@@ -719,14 +971,17 @@ class MainWindow(QMainWindow):
                     original = original_text.strip()
                     if edited and edited != original:
                         self._save_edited_transcription(entry, edited)
-                    else:
-                        editor.hide()
-                        text_label.show()
-                        edit_button.setText("✎")
-                        edit_button.setObjectName("IconButton")
-                        edit_button.setToolTip("Редактировать")
-                        edit_button.style().unpolish(edit_button)
-                        edit_button.style().polish(edit_button)
+                        text_label.setText(edited)
+
+                    # Always leave edit mode, even when the confirmation
+                    # dialog was shown or the text was unchanged.
+                    editor.hide()
+                    text_label.show()
+                    edit_button.setText("✎")
+                    edit_button.setObjectName("IconButton")
+                    edit_button.setToolTip("Редактировать")
+                    edit_button.style().unpolish(edit_button)
+                    edit_button.style().polish(edit_button)
 
             copy_button.clicked.connect(copy_current)
             edit_button.clicked.connect(toggle_edit)
@@ -750,73 +1005,121 @@ class MainWindow(QMainWindow):
 
         return card
 
+    @staticmethod
+    def _extract_word_tokens(text: str) -> list[str]:
+        """Extract words while ignoring punctuation and whitespace."""
+        return re.findall(
+            r"[\w]+(?:[-’'][\w]+)*",
+            text,
+            flags=re.UNICODE,
+        )
+
+    def _find_dictionary_candidates(
+        self,
+        original: str,
+        edited: str,
+    ) -> list[tuple[str, str]]:
+        """
+        Find conservative word substitutions.
+
+        Punctuation-only edits are deliberately ignored. We only propose a
+        dictionary entry when a SequenceMatcher replacement changes the same
+        number of word tokens, which prevents unrelated insertions/deletions
+        from becoming dictionary entries.
+        """
+        import difflib
+
+        old_words = self._extract_word_tokens(original)
+        new_words = self._extract_word_tokens(edited)
+
+        if not old_words or not new_words:
+            return []
+
+        matcher = difflib.SequenceMatcher(
+            a=[word.casefold() for word in old_words],
+            b=[word.casefold() for word in new_words],
+        )
+
+        candidates: list[tuple[str, str]] = []
+        existing = {
+            (source.casefold(), replacement.casefold())
+            for source, replacement in self._dictionary.corrections()
+        }
+
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag != "replace":
+                continue
+
+            # Conservative by design: only equal-sized replacements are
+            # considered word corrections.
+            if (i2 - i1) != (j2 - j1):
+                continue
+
+            for old, new in zip(old_words[i1:i2], new_words[j1:j2]):
+                if old.casefold() == new.casefold():
+                    continue
+
+                pair = (old, new)
+                if (old.casefold(), new.casefold()) not in existing:
+                    candidates.append(pair)
+
+        # De-duplicate while preserving the order in which corrections
+        # appeared in the user's edit.
+        unique: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for pair in candidates:
+            key = (pair[0].casefold(), pair[1].casefold())
+            if key not in seen:
+                seen.add(key)
+                unique.append(pair)
+
+        return unique
+
+    def _ask_add_dictionary(
+        self,
+        candidates: list[tuple[str, str]],
+    ) -> bool:
+        """Ask whether detected word corrections should enter the dictionary."""
+        if not candidates:
+            return False
+
+        palette = self._palette_for_theme(self.current_theme)
+        dialog = DictionaryPromptDialog(self, candidates, palette)
+        return dialog.exec() == QDialog.Accepted
+
     def _save_edited_transcription(self, entry: dict[str, Any], edited: str) -> None:
         original = str(entry.get("text", "")).strip()
         edited = edited.strip()
         if not edited or edited == original:
             return
 
-        # Learn simple word/phrase substitutions from the user's edit.
-        import difflib
-        old_words = original.split()
-        new_words = edited.split()
-        matcher = difflib.SequenceMatcher(a=old_words, b=new_words)
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag == "replace" and (i2 - i1) == (j2 - j1):
-                for old, new in zip(old_words[i1:i2], new_words[j1:j2]):
-                    old_clean = old.strip(".,!?;:\"'()[]{}")
-                    new_clean = new.strip(".,!?;:\"'()[]{}")
-                    if old_clean and new_clean and old_clean.casefold() != new_clean.casefold():
-                        self._dictionary.add_correction(old_clean, new_clean)
+        candidates = self._find_dictionary_candidates(original, edited)
 
-        # Update the history record itself so the corrected text becomes the
-        # user's canonical version for future review.
-        entries = self.history.load()
-        for item in entries:
-            if item is entry or (
-                item.get("timestamp") == entry.get("timestamp")
-                and item.get("text") == entry.get("text")
-            ):
-                item["text"] = edited
-                break
-        self.history.path.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self.refresh()
+        # Ask only when actual word substitutions were detected.
+        if candidates and self._ask_add_dictionary(candidates):
+            for source, replacement in candidates:
+                self._dictionary.add_correction(source, replacement)
 
+        # The user's corrected transcription is always persisted, regardless
+        # of the dictionary answer.
+        self.history.update(entry, edited)
+        entry["text"] = edited
     def _dictionary_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
 
-        # Manual correction: recognized form -> desired form.
         add_card = self._card()
         add_layout = QHBoxLayout(add_card)
         add_layout.setContentsMargins(18, 16, 18, 16)
-        add_layout.setSpacing(10)
-
-        self.dictionary_source_input = QLineEdit()
-        self.dictionary_source_input.setPlaceholderText("Как Saydo распознаёт…")
-        self.dictionary_source_input.setObjectName("Search")
-        self.dictionary_source_input.returnPressed.connect(self._add_dictionary_correction)
-        add_layout.addWidget(self.dictionary_source_input, 1)
-
-        arrow = QLabel("→")
-        arrow.setObjectName("TimeLabel")
-        arrow.setAlignment(Qt.AlignCenter)
-        add_layout.addWidget(arrow)
-
-        self.dictionary_replacement_input = QLineEdit()
-        self.dictionary_replacement_input.setPlaceholderText("Как должно быть…")
-        self.dictionary_replacement_input.setObjectName("Search")
-        self.dictionary_replacement_input.returnPressed.connect(self._add_dictionary_correction)
-        add_layout.addWidget(self.dictionary_replacement_input, 1)
-
+        self.dictionary_input = QLineEdit()
+        self.dictionary_input.setPlaceholderText("Добавить слово или название…")
+        self.dictionary_input.setObjectName("Search")
+        add_layout.addWidget(self.dictionary_input, 1)
         add_button = QPushButton("Добавить")
         add_button.setObjectName("PrimaryButton")
-        add_button.clicked.connect(self._add_dictionary_correction)
+        add_button.clicked.connect(self._add_dictionary_word)
         add_layout.addWidget(add_button)
         layout.addWidget(add_card)
 
@@ -832,60 +1135,44 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.dictionary_list, 1)
         return page
 
-    def _add_dictionary_correction(self) -> None:
-        source = self.dictionary_source_input.text().strip()
-        replacement = self.dictionary_replacement_input.text().strip()
-        if not source or not replacement:
+    def _add_dictionary_word(self) -> None:
+        word = self.dictionary_input.text().strip()
+        if not word:
             return
-        self._dictionary.add_correction(source, replacement)
-        self.dictionary_source_input.clear()
-        self.dictionary_replacement_input.clear()
+        self._dictionary.add_word(word)
+        self.dictionary_input.clear()
         self._refresh_dictionary()
 
     def _refresh_dictionary(self) -> None:
         if not hasattr(self, "dictionary_list"):
             return
-
         entries = self._dictionary.load()
         self.dictionary_list.clear()
-
         for index, entry in enumerate(entries):
             item = QListWidgetItem()
-            widget = self._dictionary_card(entry, index)
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(self._dictionary_card(entry, index).sizeHint())
             item.setData(Qt.UserRole, index)
             self.dictionary_list.addItem(item)
-            self.dictionary_list.setItemWidget(item, widget)
-
+            self.dictionary_list.setItemWidget(item, self._dictionary_card(entry, index))
         self._filter_dictionary(self.dictionary_search.text())
 
     def _dictionary_card(self, entry: dict[str, str], index: int) -> QFrame:
         card = self._card()
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 10, 12, 10)
-
         if entry.get("type") == "correction":
-            label = QLabel(
-                f"{entry.get('source', '')}  →  {entry.get('replacement', '')}"
-            )
-            kind_text = "Исправление"
+            label = QLabel(f"{entry.get('source', '')}  →  {entry.get('replacement', '')}")
         else:
             label = QLabel(entry.get("word", ""))
-            kind_text = "Слово"
-
         label.setObjectName("HistoryText")
         layout.addWidget(label, 1)
-
-        kind = QLabel(kind_text)
+        kind = QLabel("Исправление" if entry.get("type") == "correction" else "Слово")
         kind.setObjectName("TimeLabel")
         layout.addWidget(kind)
-
         delete = QPushButton("×")
         delete.setObjectName("IconButton")
         delete.setToolTip("Удалить из словаря")
-        delete.clicked.connect(
-            lambda checked=False, i=index: self._delete_dictionary(i)
-        )
+        delete.clicked.connect(lambda checked=False, i=index: self._delete_dictionary(i))
         layout.addWidget(delete)
         return card
 
@@ -896,33 +1183,22 @@ class MainWindow(QMainWindow):
     def _filter_dictionary(self, text: str) -> None:
         if not hasattr(self, "dictionary_list"):
             return
-
         query = text.strip().casefold()
         entries = self._dictionary.load()
-
         for index in range(self.dictionary_list.count()):
             item = self.dictionary_list.item(index)
-            entry_index = item.data(Qt.UserRole)
-            entry = (
-                entries[entry_index]
-                if isinstance(entry_index, int) and 0 <= entry_index < len(entries)
-                else {}
-            )
-            haystack = " ".join(
-                str(entry.get(key, ""))
-                for key in ("word", "source", "replacement")
-            ).casefold()
+            entry = entries[index] if index < len(entries) else {}
+            haystack = " ".join(str(entry.get(k, "")) for k in ("word", "source", "replacement")).casefold()
             item.setHidden(bool(query and query not in haystack))
 
     def _refresh_history(self, entries: list[dict[str, Any]]) -> None:
         self.history_list.clear()
         for entry in entries:
             item = QListWidgetItem()
-            item.setSizeHint(self._history_card(entry).sizeHint())
+            widget = self._history_card(entry, editable=True)
+            item.setSizeHint(widget.sizeHint())
             item.setData(Qt.UserRole, entry)
             self.history_list.addItem(item)
-
-            widget = self._history_card(entry)
             self.history_list.setItemWidget(item, widget)
 
     def _filter_history(self, text: str) -> None:
@@ -971,6 +1247,10 @@ class MainWindow(QMainWindow):
             for key, button in self.theme_buttons.items():
                 button.setChecked(key == theme)
 
+        # The native Windows title bar does not inherit Qt's stylesheet,
+        # so update it explicitly every time the user changes the theme.
+        self._apply_windows_titlebar()
+
     def _palette_for_theme(self, theme: str) -> dict[str, str]:
         if theme == "dark":
             return DARK
@@ -1005,9 +1285,7 @@ class MainWindow(QMainWindow):
             border-right: 1px solid {c["border"]};
         }}
         #BrandIcon {{
-            color: {ACCENT};
-            font-size: 24px;
-            font-weight: 800;
+            background: transparent;
         }}
         #BrandName {{
             font-size: 20px;
@@ -1025,6 +1303,7 @@ class MainWindow(QMainWindow):
             text-align: left;
             padding: 10px 12px;
             font-size: 13px;
+            min-width: 0;
         }}
         QPushButton#NavButton:hover {{
             background: {c["hover"]};
