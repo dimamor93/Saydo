@@ -12,8 +12,10 @@ from app.injection.text_injector import TextInjector
 from app.llm.local import LocalLLMProvider
 from app.stt.local_gigaam import LocalGigaAMProvider
 from app.text.processor import TextProcessor
+from app.ui.dashboard import SaydoDesktopUI
 from app.ui.overlay import SaydoOverlay
 from app.ui.tray import SaydoTray
+
 
 HOTKEY = "right ctrl"
 MODE = ProcessingMode.INSTANT
@@ -42,22 +44,29 @@ def main() -> None:
     injector = TextInjector()
     hotkey = HotkeyManager(HOTKEY)
     overlay = SaydoOverlay()
+    desktop_ui = SaydoDesktopUI(
+        hotkey=HOTKEY,
+        mode=MODE.value,
+    )
 
     shutdown_event = threading.Event()
+    # Qt requires QApplication and its event loop to run in the process main thread.
+    # The previous UI implementation started PySide6 in a worker thread, which can
+    # cause a hard GUI freeze/deadlock on Windows. The desktop UI is started below
+    # on the main thread; the audio/hotkey work remains in background threads.
 
-    ui_thread = threading.Thread(
+    overlay_thread = threading.Thread(
         target=overlay.start,
-        name="SaydoUI",
+        name="SaydoOverlay",
         daemon=True,
     )
-    ui_thread.start()
+    overlay_thread.start()
 
     while overlay._root is None:
         time.sleep(0.01)
 
     state_lock = threading.Lock()
     state = SaydoState.IDLE
-
     live_stop_event = threading.Event()
     live_thread: threading.Thread | None = None
 
@@ -69,6 +78,7 @@ def main() -> None:
         nonlocal state
         with state_lock:
             state = new_state
+        desktop_ui.set_runtime_state(new_state.value)
 
     def shutdown() -> None:
         shutdown_event.set()
@@ -95,8 +105,12 @@ def main() -> None:
         except Exception:
             pass
 
+        desktop_ui.stop()
+
     tray = SaydoTray(on_exit=shutdown)
     tray.start()
+
+    desktop_ui.set_runtime_state(SaydoState.IDLE.value)
 
     print()
     print("[Saydo] Ready")
@@ -108,7 +122,6 @@ def main() -> None:
 
     def realtime_worker() -> None:
         last_text = ""
-
         while not live_stop_event.is_set():
             try:
                 if get_state() != SaydoState.RECORDING:
@@ -124,6 +137,7 @@ def main() -> None:
 
                 if text and text != last_text:
                     overlay.update_text(text)
+                    desktop_ui.set_live_text(text)
                     last_text = text
 
             except Exception as exc:
@@ -142,7 +156,9 @@ def main() -> None:
             recorder.start()
             set_state(SaydoState.RECORDING)
             live_stop_event.clear()
+
             overlay.show_recording()
+            desktop_ui.set_live_text("Слушаю…")
 
             live_thread = threading.Thread(
                 target=realtime_worker,
@@ -170,6 +186,7 @@ def main() -> None:
             if len(audio) == 0:
                 print("[Saydo] No audio captured.")
                 overlay.hide()
+                desktop_ui.set_live_text("")
                 set_state(SaydoState.IDLE)
                 return
 
@@ -182,6 +199,7 @@ def main() -> None:
             if not text:
                 print("[Saydo] Nothing recognized.")
                 overlay.hide()
+                desktop_ui.set_live_text("")
                 set_state(SaydoState.IDLE)
                 return
 
@@ -192,29 +210,38 @@ def main() -> None:
             except Exception as exc:
                 print(f"[Saydo] Processing error: {exc}")
                 overlay.hide()
+                desktop_ui.set_live_text("")
                 set_state(SaydoState.IDLE)
                 return
 
             if not text:
                 print("[Saydo] Nothing to insert.")
                 overlay.hide()
+                desktop_ui.set_live_text("")
                 set_state(SaydoState.IDLE)
                 return
 
             print(f"[Saydo] Final: {text}")
-            overlay.update_text(text)
+
+            desktop_ui.set_live_text(text)
+            desktop_ui.add_transcription(text, duration, MODE.value)
             injector.inject(text)
+
             time.sleep(0.4)
             overlay.hide()
+            desktop_ui.set_live_text("")
             set_state(SaydoState.IDLE)
 
         except Exception as exc:
             print(f"[Saydo] Error: {exc}")
+
             try:
                 recorder.stop()
             except Exception:
                 pass
+
             overlay.hide()
+            desktop_ui.set_live_text("")
             set_state(SaydoState.IDLE)
 
     hotkey.start(
@@ -235,15 +262,13 @@ def main() -> None:
     )
     exit_thread.start()
 
+    # QApplication must own the main thread. This call blocks in Qt's event loop
+    # while hotkey/audio workers continue independently.
     try:
-        shutdown_event.wait()
+        desktop_ui.start()
     finally:
+        shutdown_event.set()
         shutdown()
-        overlay.close()
-        hotkey.stop()
-        tray.stop()
-
-    print("[Saydo] Exiting...")
 
 
 if __name__ == "__main__":
