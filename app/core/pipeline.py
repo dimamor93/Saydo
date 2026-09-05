@@ -33,15 +33,15 @@ class ProcessingPipeline:
     def process(self, text: str) -> str:
         text = self.text_processor.process(text)
 
-        # Dictionary and snippets are deterministic local preprocessing.
-        # They run before either final Instant output or the LLM.
-        text = self.dictionary.apply(text)
-        text = self.snippets.apply(text)
-
+        # The user dictionary belongs to Instant: it is a fast,
+        # deterministic local correction layer.
         if self.mode == ProcessingMode.INSTANT:
-            return text
+            return self.snippets.apply(self.dictionary.apply(text))
 
         if self.mode == ProcessingMode.AI:
+            # Snippets are deterministic expansions and remain useful in AI
+            # mode; the expanded text is then handed to the LLM.
+            text = self.snippets.apply(text)
             if self.llm_provider is None:
                 raise RuntimeError("AI mode requires an LLM provider")
             return self.llm_provider.process(text)

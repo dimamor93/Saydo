@@ -14,10 +14,14 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
 
 from app.core.dictionary import UserDictionary
 from app.core.snippets import SnippetStore
+from app.llm.hardware import has_cuda_gpu
+from app.llm.ollama import OllamaService
+from app.llm.settings import LLMSettingsStore
 from PySide6.QtGui import QFont, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -145,7 +149,7 @@ class _Bridge(QObject):
 class SaydoDesktopUI:
     """Modern desktop dashboard running independently from the recorder/overlay."""
 
-    def __init__(self, hotkey: str = "right ctrl", mode: str = "instant") -> None:
+    def __init__(self, hotkey: str = "right ctrl", mode: str = "instant", on_mode_change=None, on_model_change=None) -> None:
         self.hotkey = hotkey
         self.mode = mode
         self._queue: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -154,6 +158,8 @@ class SaydoDesktopUI:
         self._window: MainWindow | None = None
         self._started = threading.Event()
         self._history = HistoryStore()
+        self._on_mode_change = on_mode_change
+        self._on_model_change = on_model_change
     def start(self) -> None:
         self._thread = threading.current_thread()
         self._app = QApplication.instance() or QApplication(sys.argv)
@@ -164,6 +170,8 @@ class SaydoDesktopUI:
             history=self._history,
             hotkey=self.hotkey,
             mode=self.mode,
+            on_mode_change=self._on_mode_change,
+            on_model_change=self._on_model_change,
         )
         self._window.show()
         self._window.raise_()
@@ -406,12 +414,225 @@ class DictionaryPromptDialog(QDialog):
             self.move(max(0, x), max(0, y))
 
 
+
+
+class AIWarningDialog(QDialog):
+    """Themed confirmation shown before enabling CPU-only AI processing."""
+
+    def __init__(self, parent: QWidget, palette: dict[str, str]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("AI Mode")
+        self.setModal(True)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedWidth(470)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        card = QFrame()
+        card.setObjectName("AIWarningCard")
+        card.setStyleSheet(f"""
+            QFrame#AIWarningCard {{
+                background: {palette["card"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 18px;
+            }}
+            QLabel#AIWarningTitle {{
+                color: {palette["text"]};
+                font-size: 19px;
+                font-weight: 700;
+            }}
+            QLabel#AIWarningText {{
+                color: {palette["muted"]};
+                font-size: 13px;
+            }}
+            QLabel#AIWarningHint {{
+                color: {palette["text"]};
+                background: {palette["card_alt"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 10px;
+                padding: 11px 12px;
+                font-size: 12px;
+            }}
+            QPushButton#AIWarningCancel {{
+                background: transparent;
+                color: {palette["muted"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 10px;
+                padding: 9px 16px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton#AIWarningConfirm {{
+                background: {ACCENT};
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 9px 18px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+        """)
+
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("AI Mode может работать медленнее")
+        title.setObjectName("AIWarningTitle")
+        layout.addWidget(title)
+
+        text = QLabel(
+            "На этом компьютере не обнаружен совместимый GPU. "
+            "Локальная AI-обработка будет выполняться на процессоре "
+            "и может заметно увеличить время обработки диктовки."
+        )
+        text.setObjectName("AIWarningText")
+        text.setWordWrap(True)
+        layout.addWidget(text)
+
+        hint = QLabel(
+            "Вы всё равно можете включить AI Mode — Saydo продолжит работать, "
+            "но результат может появляться с задержкой."
+        )
+        hint.setObjectName("AIWarningHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("Отмена")
+        cancel.setObjectName("AIWarningCancel")
+        confirm = QPushButton("Всё равно включить")
+        confirm.setObjectName("AIWarningConfirm")
+        confirm.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        confirm.clicked.connect(self.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(confirm)
+        layout.addLayout(buttons)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.parentWidget() is not None:
+            parent = self.parentWidget()
+            self.move(
+                max(0, parent.x() + (parent.width() - self.width()) // 2),
+                max(0, parent.y() + (parent.height() - self.height()) // 2),
+            )
+
+class AIUnavailableDialog(QDialog):
+    """Themed informational dialog shown when local AI cannot be started."""
+
+    def __init__(self, parent: QWidget, palette: dict[str, str], title: str, text: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("AI Mode")
+        self.setModal(True)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedWidth(470)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        card = QFrame()
+        card.setObjectName("AIUnavailableCard")
+        card.setStyleSheet(f"""
+            QFrame#AIUnavailableCard {{
+                background: {palette["card"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 18px;
+            }}
+            QLabel#AIUnavailableTitle {{
+                color: {palette["text"]};
+                font-size: 19px;
+                font-weight: 700;
+            }}
+            QLabel#AIUnavailableText {{
+                color: {palette["muted"]};
+                font-size: 13px;
+                line-height: 1.35;
+            }}
+            QLabel#AIUnavailableHint {{
+                color: {palette["text"]};
+                background: {palette["card_alt"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 10px;
+                padding: 11px 12px;
+                font-size: 12px;
+            }}
+            QPushButton#AIUnavailableOk {{
+                background: {ACCENT};
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 9px 22px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton#AIUnavailableOk:hover {{
+                background: {ACCENT_HOVER};
+            }}
+        """)
+
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("AIUnavailableTitle")
+        layout.addWidget(title_label)
+
+        text_label = QLabel(text)
+        text_label.setObjectName("AIUnavailableText")
+        text_label.setWordWrap(True)
+        layout.addWidget(text_label)
+
+        hint = QLabel("AI Mode будет отключён. Вы сможете включить его снова после установки и настройки Ollama.")
+        hint.setObjectName("AIUnavailableHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        ok = QPushButton("ОК")
+        ok.setObjectName("AIUnavailableOk")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        buttons.addWidget(ok)
+        layout.addLayout(buttons)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.parentWidget() is not None:
+            parent = self.parentWidget()
+            self.move(
+                max(0, parent.x() + (parent.width() - self.width()) // 2),
+                max(0, parent.y() + (parent.height() - self.height()) // 2),
+            )
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
         history: HistoryStore,
         hotkey: str,
         mode: str,
+        on_mode_change=None,
+        on_model_change=None,
     ) -> None:
         super().__init__()
         self.history = history
@@ -423,6 +644,10 @@ class MainWindow(QMainWindow):
         self.allow_close = False
         self.hotkey = hotkey
         self.mode = mode
+        self._on_mode_change = on_mode_change
+        self._on_model_change = on_model_change
+        self._llm_settings = LLMSettingsStore()
+        self._ollama = OllamaService()
         self.current_theme = "system"
         self.runtime_state = "idle"
 
@@ -647,6 +872,34 @@ class MainWindow(QMainWindow):
         hero_layout.addLayout(left, 1)
         hero_layout.addWidget(self.live_label)
 
+        ai_panel = QFrame()
+        ai_panel.setObjectName("AIModePanel")
+        ai_layout = QHBoxLayout(ai_panel)
+        ai_layout.setContentsMargins(16, 12, 16, 12)
+        ai_layout.setSpacing(10)
+
+        ai_text = QVBoxLayout()
+        ai_title = QLabel("AI Mode")
+        ai_title.setObjectName("AIHeading")
+        ai_desc = QLabel("Улучшенная обработка текста с помощью ИИ")
+        ai_desc.setObjectName("MutedText")
+        ai_text.addWidget(ai_title)
+        ai_text.addWidget(ai_desc)
+        ai_layout.addLayout(ai_text, 1)
+
+        self.ai_switch = QPushButton("Выкл.")
+        self.ai_switch.setObjectName("AISwitch")
+        self.ai_switch.setCheckable(True)
+        self.ai_switch.setFixedSize(76, 34)
+        self.ai_switch.setCursor(Qt.PointingHandCursor)
+        self.ai_switch.clicked.connect(self._toggle_ai_mode)
+        ai_layout.addWidget(self.ai_switch)
+
+        # AI Mode is intentionally off by default. The persisted value is
+        # restored only after the user has explicitly accepted it before.
+        self._set_ai_switch(self.mode == "ai")
+
+        layout.addWidget(ai_panel)
         layout.addWidget(hero)
 
         stats = QHBoxLayout()
@@ -670,11 +923,105 @@ class MainWindow(QMainWindow):
         recent_header.addWidget(all_btn)
         layout.addLayout(recent_header)
 
-        self.recent_list = QVBoxLayout()
+        recent_scroll = QScrollArea()
+        recent_scroll.setObjectName("RecentScroll")
+        recent_scroll.setWidgetResizable(True)
+        recent_scroll.setFrameShape(QFrame.NoFrame)
+        recent_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        recent_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        recent_scroll.viewport().setAutoFillBackground(False)
+
+        recent_content = QWidget()
+        recent_content.setObjectName("RecentContent")
+        recent_content.setAttribute(Qt.WA_StyledBackground, True)
+        self.recent_list = QVBoxLayout(recent_content)
+        self.recent_list.setContentsMargins(0, 0, 4, 0)
         self.recent_list.setSpacing(8)
-        layout.addLayout(self.recent_list)
-        layout.addStretch()
+        self.recent_list.setAlignment(Qt.AlignTop)
+        recent_scroll.setWidget(recent_content)
+
+        layout.addWidget(recent_scroll, 1)
         return page
+
+    def _set_ai_switch(self, enabled: bool) -> None:
+        self.ai_switch.blockSignals(True)
+        self.ai_switch.setChecked(enabled)
+        self.ai_switch.setText("Вкл." if enabled else "Выкл.")
+        self.ai_switch.blockSignals(False)
+
+    def _toggle_ai_mode(self, checked: bool) -> None:
+        if not checked:
+            self.mode = "instant"
+            self._llm_settings.save_ai_mode(False)
+            self._set_ai_switch(False)
+            if self._on_mode_change is not None:
+                try:
+                    self._on_mode_change(self.mode)
+                except Exception as exc:
+                    print(f"[Saydo] Mode callback error: {exc}")
+            self._update_mode_label()
+            return
+
+        palette = self._palette_for_theme(self.current_theme)
+
+        # CPU-only AI can work, but may be noticeably slower. Ask for an
+        # explicit confirmation before allowing it.
+        if not has_cuda_gpu():
+            dialog = AIWarningDialog(self, palette)
+            if dialog.exec() != QDialog.Accepted:
+                self._set_ai_switch(False)
+                return
+
+        # GPU availability is not enough: local AI also requires Ollama and
+        # at least one installed model. Check both before changing the mode.
+        ollama_status, models = self._ollama.status()
+        if ollama_status == "unavailable":
+            AIUnavailableDialog(
+                self,
+                palette,
+                "Ollama не найдена",
+                "Saydo не может запустить AI Mode, потому что Ollama не установлена или недоступна на этом компьютере.",
+            ).exec()
+            self._disable_ai_mode()
+            return
+
+        if ollama_status == "no_models" or not models:
+            AIUnavailableDialog(
+                self,
+                palette,
+                "В Ollama нет моделей",
+                "Ollama установлена, но в ней пока нет ни одной доступной языковой модели. Установите модель через Ollama и попробуйте снова.",
+            ).exec()
+            self._disable_ai_mode()
+            return
+
+        self.mode = "ai"
+        self._llm_settings.save_ai_mode(True)
+        self._set_ai_switch(True)
+        if self._on_mode_change is not None:
+            try:
+                self._on_mode_change(self.mode)
+            except Exception as exc:
+                print(f"[Saydo] Mode callback error: {exc}")
+        self._update_mode_label()
+
+    def _disable_ai_mode(self) -> None:
+        """Force AI Mode back to Instant after a failed preflight check."""
+        self.mode = "instant"
+        self._llm_settings.save_ai_mode(False)
+        self._set_ai_switch(False)
+        self._update_mode_label()
+        if self._on_mode_change is not None:
+            try:
+                self._on_mode_change(self.mode)
+            except Exception as exc:
+                print(f"[Saydo] Mode callback error: {exc}")
+
+    def _update_mode_label(self) -> None:
+        if hasattr(self, "mode_value_label"):
+            self.mode_value_label.setText(
+                "AI" if self.mode == "ai" else "Instant"
+            )
 
     def _stat_card(self, value: str, label: str) -> QFrame:
         card = self._card()
@@ -1029,11 +1376,82 @@ class MainWindow(QMainWindow):
         c.addWidget(h)
         c.addSpacing(6)
         c.addWidget(QLabel(f"Горячая клавиша:  {self.hotkey}"))
-        c.addWidget(QLabel("Режим обработки:  Instant"))
+        mode_row = QHBoxLayout()
+        mode_title = QLabel("Режим обработки:")
+        self.mode_value_label = QLabel("AI" if self.mode == "ai" else "Instant")
+        self.mode_value_label.setObjectName("SettingsValue")
+        mode_row.addWidget(mode_title)
+        mode_row.addStretch()
+        mode_row.addWidget(self.mode_value_label)
+        c.addLayout(mode_row)
         c.addWidget(QLabel("STT:  GigaAM-v3 e2e-CTC"))
         layout.addWidget(controls)
+
+        llm_card = self._card()
+        lc = QVBoxLayout(llm_card)
+        lc.setContentsMargins(24, 22, 24, 22)
+        lh = QLabel("AI / Языковая модель")
+        lh.setObjectName("SectionTitle")
+        ld = QLabel("Локальные модели загружаются из установленного Ollama.")
+        ld.setObjectName("MutedText")
+        lc.addWidget(lh)
+        lc.addWidget(ld)
+        lc.addSpacing(12)
+
+        model_row = QHBoxLayout()
+        self.llm_model_combo = QComboBox()
+        self.llm_model_combo.setObjectName("ModelCombo")
+        self.llm_model_combo.setMinimumHeight(40)
+        self.llm_model_combo.currentTextChanged.connect(self._model_changed)
+        refresh_btn = QPushButton("Обновить")
+        refresh_btn.setObjectName("SecondaryButton")
+        refresh_btn.clicked.connect(self._refresh_llm_models)
+        model_row.addWidget(self.llm_model_combo, 1)
+        model_row.addWidget(refresh_btn)
+        lc.addLayout(model_row)
+
+        self.llm_status = QLabel("")
+        self.llm_status.setObjectName("MutedText")
+        lc.addWidget(self.llm_status)
+        layout.addWidget(llm_card)
+        self._refresh_llm_models()
         layout.addStretch()
         return page
+
+    def _refresh_llm_models(self) -> None:
+        if not hasattr(self, "llm_model_combo"):
+            return
+        current = self._llm_settings.get_model()
+        models = self._ollama.list_models()
+
+        self.llm_model_combo.blockSignals(True)
+        self.llm_model_combo.clear()
+        self.llm_model_combo.addItems(models)
+        if current and current in models:
+            self.llm_model_combo.setCurrentText(current)
+        elif models:
+            self.llm_model_combo.setCurrentIndex(0)
+            current = models[0]
+            self._llm_settings.save_model(current)
+        self.llm_model_combo.blockSignals(False)
+
+        if models:
+            self.llm_status.setText(f"Найдено моделей: {len(models)}")
+        elif self._ollama.is_available():
+            self.llm_status.setText("В Ollama пока нет установленных моделей.")
+        else:
+            self.llm_status.setText("Ollama не запущена или не установлена.")
+
+    def _model_changed(self, model: str) -> None:
+        model = model.strip()
+        if not model:
+            return
+        self._llm_settings.save_model(model)
+        if self._on_model_change is not None:
+            try:
+                self._on_model_change(model)
+            except Exception as exc:
+                print(f"[Saydo] Model callback error: {exc}")
 
     def _help_page(self) -> QWidget:
         page = QWidget()
@@ -1138,12 +1556,14 @@ class MainWindow(QMainWindow):
 
     def _history_card(self, entry: dict[str, Any], editable: bool = False) -> QFrame:
         card = self._card()
-        # Keep history rows visually stable. Entering edit mode must not
-        # resize the row or push neighbouring widgets around.
-        card.setFixedHeight(66)
+        # Keep every history row tall enough for a wrapped two-line
+        # transcription. A fixed height smaller than the label's contents
+        # causes the next card to visually overlap the previous one.
+        card.setFixedHeight(82)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 10, 12, 10)
         layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignVCenter)
 
         ts = str(entry.get("timestamp", ""))
         try:
@@ -1163,7 +1583,8 @@ class MainWindow(QMainWindow):
             text_label = QLabel(original_text)
             text_label.setObjectName("HistoryText")
             text_label.setWordWrap(True)
-            text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            text_label.setMaximumHeight(42)
+            text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
             editor = QPlainTextEdit()
             editor.setObjectName("HistoryEditor")
@@ -1188,6 +1609,24 @@ class MainWindow(QMainWindow):
 
             def copy_current() -> None:
                 self._copy(editor.toPlainText() if editor.isVisible() else text_label.text())
+                copy_button.setText("✓")
+                copy_button.setObjectName("ConfirmButton")
+                copy_button.setToolTip("Скопировано")
+                copy_button.style().unpolish(copy_button)
+                copy_button.style().polish(copy_button)
+                token = int(copy_button.property("copy_feedback_token") or 0) + 1
+                copy_button.setProperty("copy_feedback_token", token)
+
+                def restore() -> None:
+                    if copy_button.property("copy_feedback_token") != token:
+                        return
+                    copy_button.setText("⧉")
+                    copy_button.setObjectName("IconButton")
+                    copy_button.setToolTip("Скопировать")
+                    copy_button.style().unpolish(copy_button)
+                    copy_button.style().polish(copy_button)
+
+                QTimer.singleShot(1000, restore)
 
             def toggle_edit() -> None:
                 if not editor.isVisible():
@@ -1229,16 +1668,36 @@ class MainWindow(QMainWindow):
             text = QLabel(original_text)
             text.setObjectName("HistoryText")
             text.setWordWrap(True)
-            text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            text.setMaximumHeight(42)
+            text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             layout.addWidget(text, 1)
 
             copy_button = QPushButton("⧉")
             copy_button.setObjectName("IconButton")
             copy_button.setFixedSize(40, 40)
             copy_button.setToolTip("Скопировать")
-            copy_button.clicked.connect(
-                lambda checked=False, value=original_text: self._copy(value)
-            )
+            def copy_current() -> None:
+                self._copy(original_text)
+                copy_button.setText("✓")
+                copy_button.setObjectName("ConfirmButton")
+                copy_button.setToolTip("Скопировано")
+                copy_button.style().unpolish(copy_button)
+                copy_button.style().polish(copy_button)
+                token = int(copy_button.property("copy_feedback_token") or 0) + 1
+                copy_button.setProperty("copy_feedback_token", token)
+
+                def restore() -> None:
+                    if copy_button.property("copy_feedback_token") != token:
+                        return
+                    copy_button.setText("⧉")
+                    copy_button.setObjectName("IconButton")
+                    copy_button.setToolTip("Скопировать")
+                    copy_button.style().unpolish(copy_button)
+                    copy_button.style().polish(copy_button)
+
+                QTimer.singleShot(1000, restore)
+
+            copy_button.clicked.connect(copy_current)
             layout.addWidget(copy_button)
 
         return card
@@ -1692,7 +2151,7 @@ class MainWindow(QMainWindow):
         QPushButton#ConfirmButton {{
             border: none;
             background: transparent;
-            color: #43D17A;
+            color: {c["muted"]};
             font-size: 18px;
             font-weight: 700;
             padding: 7px;
@@ -1700,7 +2159,49 @@ class MainWindow(QMainWindow):
         }}
         QPushButton#ConfirmButton:hover {{
             background: {c["hover"]};
-            color: #43D17A;
+            color: {c["text"]};
+        }}
+        #AIModePanel {{
+            background: {c["card_alt"]};
+            border: 1px solid {c["border"]};
+            border-radius: 14px;
+        }}
+        #AIHeading {{
+            font-size: 15px;
+            font-weight: 650;
+        }}
+        QPushButton#AISwitch {{
+            background: {c["border"]};
+            color: {c["muted"]};
+            border: none;
+            border-radius: 17px;
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QPushButton#AISwitch:checked {{
+            background: {ACCENT};
+            color: white;
+        }}
+        QComboBox#ModelCombo {{
+            background: {c["card"]};
+            border: 1px solid {c["border"]};
+            border-radius: 10px;
+            padding: 8px 12px;
+        }}
+        QPushButton#SecondaryButton {{
+            background: {c["card_alt"]};
+            color: {c["text"]};
+            border: 1px solid {c["border"]};
+            border-radius: 9px;
+            padding: 9px 16px;
+            font-weight: 600;
+        }}
+        QPushButton#SecondaryButton:hover {{
+            background: {c["hover"]};
+        }}
+        #SettingsValue {{
+            color: {ACCENT};
+            font-weight: 650;
         }}
         QPushButton#PrimaryButton {{
             background: {ACCENT};
@@ -1726,6 +2227,16 @@ class MainWindow(QMainWindow):
         QListWidget#HistoryList::item {{
             background: transparent;
             border: none;
+        }}
+        QScrollArea#RecentScroll {{
+            background: {c["bg"]};
+            border: none;
+        }}
+        QScrollArea#RecentScroll > QWidget#qt_scrollarea_viewport {{
+            background: {c["bg"]};
+        }}
+        QWidget#RecentContent {{
+            background: {c["bg"]};
         }}
         QPushButton#ThemeButton {{
             background: {c["card_alt"]};
