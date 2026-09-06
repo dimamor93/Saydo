@@ -125,7 +125,7 @@ def test_hold_and_release_cycle() -> None:
         assert hook_callback is not None
 
         hook_callback(make_event("down"))
-        time.sleep(manager.min_hold_time + 0.05)
+        time.sleep(manager.min_hold_time + 0.20)
         hook_callback(make_event("up"))
 
         wait_for_events(events, ["press", "release"])
@@ -227,3 +227,153 @@ def test_double_tap_triggers_double_tap_callback() -> None:
 
         hook_callback(make_event("up"))
         manager.stop()
+
+def test_ignores_events_from_other_keys() -> None:
+    callback = Mock()
+    manager = HotkeyManager()
+
+    hook_callback = None
+
+    def fake_hook(callback):
+        nonlocal hook_callback
+        hook_callback = callback
+        return "fake-hook"
+
+    with patch(
+        "app.hotkey.manager.keyboard.hook",
+        side_effect=fake_hook,
+    ):
+        manager.start(
+            on_press=callback,
+            on_release=Mock(),
+        )
+
+        assert hook_callback is not None
+
+        event = Mock()
+        event.name = "left ctrl"
+        event.event_type = "down"
+
+        hook_callback(event)
+
+    callback.assert_not_called()
+    with patch("app.hotkey.manager.keyboard.unhook"):
+        manager.stop()
+
+
+def test_new_down_cancels_existing_pending_press() -> None:
+    callback = Mock()
+    manager = HotkeyManager()
+
+    hook_callback = None
+    pending_press = Mock()
+
+    def fake_hook(callback):
+        nonlocal hook_callback
+        hook_callback = callback
+        return "fake-hook"
+
+    with patch(
+        "app.hotkey.manager.keyboard.hook",
+        side_effect=fake_hook,
+    ), patch(
+        "app.hotkey.manager.threading.Timer",
+    ) as timer_class:
+        first_timer = Mock()
+        second_timer = Mock()
+        timer_class.side_effect = [first_timer, second_timer]
+
+        manager.start(
+            on_press=callback,
+            on_release=Mock(),
+        )
+
+        assert hook_callback is not None
+
+        hook_callback(make_event("down"))
+
+        # Simulate an existing pending timer before another press cycle.
+        manager._is_pressed = False
+        manager._pending_press = pending_press
+
+        hook_callback(make_event("down"))
+
+        pending_press.cancel.assert_called_once()
+        assert manager._pending_press is second_timer
+
+        with patch("app.hotkey.manager.keyboard.unhook"):
+            manager.stop()
+
+
+def test_stray_release_is_ignored() -> None:
+    callback = Mock()
+    manager = HotkeyManager()
+    manager._on_release = callback
+    manager._is_pressed = False
+
+    hook_callback = None
+
+    def fake_hook(callback):
+        nonlocal hook_callback
+        hook_callback = callback
+        return "fake-hook"
+
+    with patch(
+        "app.hotkey.manager.keyboard.hook",
+        side_effect=fake_hook,
+    ):
+        manager.start(
+            on_press=Mock(),
+            on_release=callback,
+        )
+
+        assert hook_callback is not None
+
+        hook_callback(make_event("up"))
+
+    callback.assert_not_called()
+    with patch("app.hotkey.manager.keyboard.unhook"):
+        manager.stop()
+
+
+def test_long_hold_calls_release_without_delay() -> None:
+    events: list[str] = []
+    hook_callback = None
+
+    def fake_hook(callback):
+        nonlocal hook_callback
+        hook_callback = callback
+        return "fake-hook"
+
+    with patch(
+        "app.hotkey.manager.keyboard.hook",
+        side_effect=fake_hook,
+    ), patch(
+        "app.hotkey.manager.keyboard.unhook",
+    ):
+        manager = HotkeyManager()
+        manager.start(
+            on_press=lambda: events.append("press"),
+            on_release=lambda: events.append("release"),
+        )
+
+        assert hook_callback is not None
+
+        hook_callback(make_event("down"))
+        time.sleep(manager.double_tap_window + 0.10)
+
+        hook_callback(make_event("up"))
+
+        assert events == ["press", "release"]
+        manager.stop()
+
+
+def test_wait_for_exit_waits_for_escape() -> None:
+    manager = HotkeyManager()
+
+    with patch("app.hotkey.manager.keyboard.wait") as wait:
+        manager.wait_for_exit()
+
+    wait.assert_called_once_with("esc")
+
+
