@@ -311,3 +311,41 @@ def test_trim_silence_respects_padding() -> None:
     )
 
     assert len(trimmed) == 500
+
+
+def test_start_error_ignores_close_error() -> None:
+    recorder = AudioRecorder()
+    stream = MagicMock()
+    stream.start.side_effect = RuntimeError("microphone error")
+    stream.close.side_effect = RuntimeError("close error")
+
+    with patch(
+        "app.audio.recorder.sd.InputStream",
+        return_value=stream,
+    ):
+        with pytest.raises(RuntimeError, match="microphone error"):
+            recorder.start()
+
+    stream.start.assert_called_once()
+    stream.close.assert_called_once()
+    assert recorder.is_recording is False
+    assert recorder._stream is None
+
+
+def test_trim_silence_returns_copy_for_single_sample() -> None:
+    recorder = AudioRecorder(sample_rate=16000)
+    audio = np.array([0.5], dtype=np.float32)
+
+    result = recorder.trim_silence(audio)
+
+    assert np.array_equal(result, audio)
+    assert result is not audio
+    
+def test_trim_silence_returns_copy_when_no_frames_are_active() -> None:
+    recorder = AudioRecorder(sample_rate=16000)
+    audio = np.full(320, np.nan, dtype=np.float32)
+
+    result = recorder.trim_silence(audio)
+
+    assert np.array_equal(result, audio, equal_nan=True)
+    assert result is not audio

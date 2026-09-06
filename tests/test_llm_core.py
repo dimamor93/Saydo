@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.llm.base import LLMProvider
 from app.llm.hardware import has_cuda_gpu
 from app.llm.settings import LLMSettingsStore
@@ -14,6 +16,11 @@ from app.runtime import configure_nvidia_runtime
 class TestProvider(LLMProvider):
     def process(self, text: str) -> str:
         return text.upper()
+
+
+class BareTestProvider(LLMProvider):
+    def process(self, text: str) -> str:
+        return super().process(text)
 
 
 def test_llm_provider_interface_can_be_implemented() -> None:
@@ -265,3 +272,10 @@ def test_runtime_does_not_duplicate_path_entry(tmp_path: Path) -> None:
         configure_nvidia_runtime()
 
         assert os.environ["PATH"].split(os.pathsep) == [str(cublas)]
+
+
+def test_llm_provider_process_base_method_raises_not_implemented() -> None:
+    provider = BareTestProvider()
+
+    with pytest.raises(NotImplementedError):
+        provider.process("test")

@@ -1,5 +1,77 @@
 [
   {
+    "text": "Да.",
+    "raw_text": "Да.",
+    "timestamp": "2026-09-06T08:32:01",
+    "duration": 0.86,
+    "words": 1,
+    "wpm": 69.8,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет.",
+    "raw_text": "Привет.",
+    "timestamp": "2026-09-06T08:31:59",
+    "duration": 5.07,
+    "words": 1,
+    "wpm": 11.8,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет.",
+    "raw_text": "Привет.",
+    "timestamp": "2026-09-06T08:31:50",
+    "duration": 10.27,
+    "words": 1,
+    "wpm": 5.8,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет. Это Сейдо.",
+    "raw_text": "Привет. Это Сейдо.",
+    "timestamp": "2026-09-06T08:31:34",
+    "duration": 6.45,
+    "words": 3,
+    "wpm": 27.9,
+    "mode": "instant"
+  },
+  {
+    "text": "Обычная фраза без длинных пауз по краям.",
+    "raw_text": "Обычная фраза без длинных пауз по краям.",
+    "timestamp": "2026-09-06T08:31:22",
+    "duration": 4.21,
+    "words": 7,
+    "wpm": 99.8,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Saydo.",
+    "raw_text": "Привет, Сейда.",
+    "timestamp": "2026-09-06T08:31:14",
+    "duration": 6.47,
+    "words": 2,
+    "wpm": 18.5,
+    "mode": "instant"
+  },
+  {
+    "text": "Жопа, жопа, жопа.",
+    "raw_text": "Жопа, жопа, жопа.",
+    "timestamp": "2026-09-06T08:24:32",
+    "duration": 2.34,
+    "words": 3,
+    "wpm": 76.9,
+    "mode": "instant"
+  },
+  {
+    "text": "Привет, Saydo, как дела?",
+    "raw_text": "Привет, Сейда, как дела?",
+    "timestamp": "2026-09-06T08:24:28",
+    "duration": 2.81,
+    "words": 4,
+    "wpm": 85.4,
+    "mode": "instant"
+  },
+  {
     "text": "Привет, Saydo. как дела?",
     "raw_text": "Привет, Сейда. как дела?",
     "timestamp": "2026-09-06T07:52:44",

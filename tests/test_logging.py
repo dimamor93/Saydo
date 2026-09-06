@@ -25,6 +25,44 @@ def reset_logging_state():
     logging_module._configured = False
 
 
+def test_app_root_uses_executable_directory_when_frozen(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    executable = tmp_path / "Saydo.exe"
+
+    monkeypatch.setattr(logging_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(logging_module.sys, "executable", str(executable))
+
+    assert logging_module._app_root() == tmp_path
+
+def test_app_root_uses_project_root_when_not_frozen(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(logging_module.sys, "frozen", False, raising=False)
+
+    result = logging_module._app_root()
+
+    assert result == logging_module.Path(
+        logging_module.__file__
+    ).resolve().parents[2]
+
+def test_load_level_returns_default_on_os_error(
+    monkeypatch,
+) -> None:
+    class BrokenPath:
+        def exists(self) -> bool:
+            raise OSError("access denied")
+
+    monkeypatch.setattr(
+        logging_module,
+        "_settings_path",
+        lambda: BrokenPath(),
+    )
+
+    assert logging_module._load_level() == "INFO"
+
+
 def test_load_level_returns_default_when_settings_missing(
     tmp_path,
     monkeypatch,

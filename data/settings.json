@@ -1,7 +1,4 @@
-﻿{
-  "theme": "dark",
-  "ai_mode": false,
-  "log_level": "INFO"
+{
+  "autostart": false,
+  "theme": "dark"
 }
-
-
