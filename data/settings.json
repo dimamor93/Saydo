@@ -1,4 +1,6 @@
 {
   "autostart": false,
-  "theme": "dark"
+  "theme": "dark",
+  "ai_mode": false,
+  "llm_model": "qwen3:0.6b"
 }

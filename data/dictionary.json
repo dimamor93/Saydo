@@ -1,6 +1,21 @@
 [
   {
     "type": "correction",
+    "source": "тирэ",
+    "replacement": "-"
+  },
+  {
+    "type": "correction",
+    "source": "тире",
+    "replacement": "-"
+  },
+  {
+    "type": "correction",
+    "source": "точка",
+    "replacement": "."
+  },
+  {
+    "type": "correction",
     "source": "Саида",
     "replacement": "Saydo"
   },
