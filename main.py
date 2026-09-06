@@ -268,9 +268,15 @@ def _run_app() -> None:
                 f"{duration:.2f} seconds."
             )
 
-            logger.info("Transcribing...")
+            trimmed_audio = recorder.trim_silence(audio)
 
-            raw_text = stt.transcribe(audio)
+            logger.info(
+                "Transcribing trimmed audio: %.2fs -> %.2fs",
+                duration,
+                len(trimmed_audio) / recorder.sample_rate,
+            )
+
+            raw_text = stt.transcribe(trimmed_audio)
 
             if not raw_text:
                 logger.info("Nothing recognized.")

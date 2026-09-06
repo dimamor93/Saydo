@@ -74,6 +74,56 @@ class AudioRecorder:
 
         return audio
 
+    def trim_silence(
+        self,
+        audio: np.ndarray,
+        threshold_db: float = -42.0,
+        frame_ms: int = 20,
+        padding_ms: int = 120,
+    ) -> np.ndarray:
+        """Trim quiet audio only from the beginning and end."""
+        if audio.size == 0:
+            return audio
+
+        samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+
+        if samples.size < 2:
+            return samples.copy()
+
+        frame_size = max(1, int(self.sample_rate * frame_ms / 1000))
+        padding = max(0, int(self.sample_rate * padding_ms / 1000))
+
+        # Calculate RMS energy for short frames.
+        frame_count = int(np.ceil(samples.size / frame_size))
+        rms_values = np.empty(frame_count, dtype=np.float32)
+
+        for index in range(frame_count):
+            start = index * frame_size
+            end = min(start + frame_size, samples.size)
+            frame = samples[start:end]
+            rms_values[index] = np.sqrt(np.mean(frame * frame))
+
+        # Use the loudest frame as a reference so the threshold adapts
+        # to different microphones and recording levels.
+        peak_rms = float(np.max(rms_values))
+
+        if peak_rms <= 0.0:
+            return samples.copy()
+
+        threshold = peak_rms * (10.0 ** (threshold_db / 20.0))
+        active = rms_values >= threshold
+
+        if not np.any(active):
+            return samples.copy()
+
+        first_frame = int(np.argmax(active))
+        last_frame = int(len(active) - 1 - np.argmax(active[::-1]))
+
+        start = max(0, first_frame * frame_size - padding)
+        end = min(samples.size, (last_frame + 1) * frame_size + padding)
+
+        return samples[start:end].copy()
+
     def snapshot(self) -> np.ndarray:
         """
         Return a copy of all audio recorded so far.
