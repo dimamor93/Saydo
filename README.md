@@ -42,44 +42,60 @@ Instant or AI processing
 Clipboard / Paste
       ↓
 Active application
-```
-
 The code is split into independent components for hotkeys, audio, STT,
 text processing, LLM processing, injection and UI.
 
-See [`architecture.md`](architecture.md) for the current architecture and
+See architecture.md for the current architecture and
 design rules.
 
-## Requirements
+Requirements
+Windows
+Python 3.12+
+A working microphone
+A compatible PyTorch installation for local GigaAM-v3 inference
+Optional: Ollama with a local model for AI mode
 
-- Windows
-- Python 3.12+
-- A working microphone
-- For local GigaAM inference, a compatible PyTorch installation
-- Optional: Ollama with a local model for AI mode
+Saydo uses
+GigaAM-v3
+for local speech recognition.
 
 The current dependency configuration is intentionally kept compatible with
 the working GigaAM-v3 environment used during development.
 
-## Running
+Installation and running
 
-Create and activate a virtual environment, install the project dependencies,
-then run:
-
-```powershell
+Clone the repository:
+git clone https://github.com/dimamor93/Saydo.git
+cd Saydo
+Create and activate a virtual environment:
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Then start Saydo:
 python main.py
-```
+or Saydo.vbs in /Saydo
+On first run, the local GigaAM-v3 model may need to be downloaded.
 
-For development quality checks, the repository contains configuration for
-Ruff and mypy. These tools are development tooling and are not required for
-running the application.
+For AI mode, install
+Ollama
+and make sure a compatible local model is available.
+Development
 
-## License
+The project contains tests and development tooling for code quality.
 
-Saydo is distributed under the **MIT License**, which permits use, modification,
+Run the test suite:
+pytest -q
+Run tests with coverage:
+python -m pytest --cov=app --cov-report=term-missing
+Run Ruff:
+ruff check .
+Run mypy:
+mypy app
+License
+
+Saydo is distributed under the MIT License, which permits use, modification,
 distribution and commercial use subject to the license notice.
 
-## Development
+Development
 
 The project is developed in vertical slices with priority given to the core
 voice-input loop, reliable transcription, reliable text injection and
