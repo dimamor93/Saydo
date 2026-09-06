@@ -1,436 +1,687 @@
 # Saydo — Architecture
 
-## 1. Project
+## 1. Project Overview
 
-**Saydo** is a Windows-first AI voice input application inspired by the interaction model of modern AI dictation tools.
+**Saydo** is a Windows-first AI voice input application inspired by modern AI dictation tools such as Wispr Flow.
 
-Core principle:
+The primary interaction is:
 
-> Saydo turns spoken intent into clean text or, later, actions — not merely raw speech-to-text.
+**Press → Speak → Release → Text appears**
 
-The first hackathon target is a working vertical slice:
+The application is designed around a short local voice-input pipeline with optional AI text processing.
 
-**Global Hotkey → Record → STT → Text → Clipboard → Paste**
+The current implementation prioritizes:
 
-The architecture must allow local and cloud AI providers without coupling the core application to a specific model or vendor.
-
----
-
-## 2. Goals
-
-### MVP goals
-
-- Global hotkey starts/stops recording.
-- Microphone audio is captured reliably.
-- Speech is converted to text.
-- Result is inserted into the currently focused application.
-- Local STT is supported.
-- Cloud STT is supported through a provider abstraction.
-- Russian and English are supported.
-- The application remains usable when a provider fails.
-
-### Non-goals for MVP
-
-- Cross-platform support.
-- Full feature parity with Wispr Flow.
-- Complex autonomous computer control.
-- Multiple cloud vendors.
-- Advanced user analytics.
-- Mobile applications.
+- low-latency voice input;
+- local speech recognition;
+- reliable text injection;
+- hands-free dictation;
+- conservative text correction;
+- Windows desktop integration;
+- measurable and testable core logic.
 
 ---
 
-## 3. High-Level Architecture
+## 2. Current Architecture
+
+The current application pipeline is:
 
 ```text
-                         ┌──────────────────┐
-                         │      User        │
-                         └────────┬─────────┘
-                                  │
-                             Global Hotkey
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │   Session/Core   │
-                         └────────┬─────────┘
-                                  │
-                             Record Audio
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │   Audio Engine   │
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │   STT Adapter    │
-                         └────────┬─────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │                           │
-                    ▼                           ▼
-             ┌──────────────┐           ┌──────────────┐
-             │  Local STT   │           │  Cloud STT   │
-             │ faster-whisper│          │    API       │
-             └──────────────┘           └──────────────┘
-                    │                           │
-                    └─────────────┬─────────────┘
-                                  │
-                              Transcript
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │ Post-processing  │
-                         │      LLM         │
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │ Text Injection   │
-                         └────────┬─────────┘
-                                  │
-                           Clipboard / Paste
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │ Active App       │
-                         │ Browser / IDE /  │
-                         │ Word / Terminal  │
-                         └──────────────────┘
-```
+                    ┌──────────────────────┐
+                    │      Right Ctrl      │
+                    │     Global Hotkey    │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    Audio Recorder    │
+                    │                      │
+                    │ microphone capture   │
+                    │ realtime audio       │
+                    │ silence trimming     │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │      GigaAM-v3       │
+                    │      e2e-CTC         │
+                    │     Local STT        │
+                    └──────────┬───────────┘
+                               │
+                         raw transcript
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    Text Processor    │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Dictionary / Snippets│
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │                     │
+                    ▼                     ▼
+                INSTANT                  AI
+                    │                     │
+                    │              ┌──────┴──────┐
+                    │              │ LLM Router  │
+                    │              └──────┬──────┘
+                    │                     │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    Text Injector     │
+                    │   Clipboard + Paste  │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    Active Window     │
+                    │ Browser / IDE / etc. │
+                    └──────────────────────┘
+3. Design Principles
+3.1 Local-first
 
----
+The primary STT implementation is local.
 
-## 4. Core Components
+The application must remain useful without an internet connection when using local processing.
 
-### 4.1 Session / Core
+3.2 Low latency
 
-Owns the lifecycle of a dictation session.
+The voice-input path should contain as few heavyweight operations as possible.
 
-State machine:
+The default AI path does not use extended model reasoning/thinking because latency is more important than deep reasoning for dictation cleanup.
 
-```text
-IDLE
-  │
-  │ hotkey pressed
-  ▼
-RECORDING
-  │
-  │ hotkey released
-  ▼
-PROCESSING
-  │
-  ├── success ──► INJECTING ──► IDLE
-  │
-  └── error ───► ERROR ───────► IDLE
-```
+3.3 Component isolation
 
-The Core must not know implementation details of individual STT or LLM providers.
+Core functionality is separated into:
 
----
+hotkey handling;
+audio recording;
+speech recognition;
+text processing;
+dictionary;
+snippets;
+LLM processing;
+text injection;
+persistent storage;
+Windows integration;
+UI.
 
-### 4.2 Hotkey Manager
+Components should communicate through simple interfaces and data rather than depending on each other's implementation details.
+
+3.4 Testability
+
+Business logic must be testable without requiring:
+
+a physical microphone;
+a real global keyboard hook;
+a running LLM;
+a downloaded STT model;
+a graphical desktop session.
+
+External systems are mocked in unit tests.
+
+4. Hotkey System
+
+The global hotkey is currently:
+Right Ctrl   
+The HotkeyManager implements three interaction patterns.
+
+Normal dictation
+Right Ctrl down
+       │
+       ▼
+ wait 200 ms
+       │
+       ▼
+ recording starts
+       │
+       ▼
+Right Ctrl up
+       │
+       ▼
+ recording stops
+
+The 200 ms threshold prevents accidental taps from starting dictation.
+
+Double tap
+
+A second press within the configured double-tap window can activate hands-free mode.
+
+press → release → press
+             │
+             ▼
+        hands-free
+Hands-free
+
+Hands-free mode allows the user to dictate without continuously holding the hotkey.
+
+The system stops automatically after the configured silence/pause condition.
+
+Hotkey guarantees
+
+The manager:
+
+ignores events from other keys;
+ignores repeated down events while the key is held;
+ignores stray up events;
+cancels pending timers when a new interaction starts;
+prevents duplicate recording starts;
+supports clean shutdown.
+5. Audio Subsystem
+
+app/audio/recorder.py owns microphone capture.
 
 Responsibilities:
 
-- Register global hotkey.
-- Detect press/release.
-- Start and stop the current session.
-- Prevent duplicate sessions.
+open the selected microphone;
+capture audio;
+maintain recording state;
+provide realtime audio data;
+finalize recordings;
+trim leading and trailing silence.
 
-The hotkey implementation is isolated from the Core.
+The recorder is thread-safe.
 
----
+Silence trimming
 
-### 4.3 Audio Engine
+Silence trimming is applied only to the beginning and end of a recording.
 
-Responsibilities:
+Internal pauses are preserved.
 
-- Select microphone.
-- Capture audio.
-- Convert to the STT-compatible format.
-- Maintain an in-memory recording buffer.
-- Stop recording cleanly.
+This is important for natural speech because pauses inside a sentence can carry meaningful timing and should not be removed aggressively.
 
-Target format:
+Current trimming parameters are configured around:
 
-```text
-Sample rate: 16 kHz
-Channels:    Mono
-Encoding:    PCM
-```
+Silence threshold: -42 dB
+Analysis frame:     20 ms
+Padding:            120 ms
 
-Optional later additions:
+The exact implementation remains isolated inside the audio subsystem.
 
-- Voice Activity Detection.
-- Noise suppression.
-- Input level monitoring.
-- Automatic silence trimming.
+6. Speech Recognition
+Current STT
 
----
+The project uses:
 
-## 5. Speech-to-Text Provider Architecture
+GigaAM-v3 e2e-CTC
 
-STT is a replaceable provider.
+as the local speech recognition engine.
 
-Conceptual interface:
+The GigaAM project is maintained by Salute Developers:
 
-```python
-class STTProvider:
-    def transcribe(
-        self,
-        audio,
-        language=None
-    ) -> TranscriptionResult:
-        ...
-```
+https://github.com/salute-developers/GigaAM
 
-Result:
+The previous Whisper implementation has been removed from the application architecture.
 
-```python
-class TranscriptionResult:
-    text: str
-    language: str
-    duration: float
-    confidence: float | None
-```
+There is intentionally no active Whisper provider in the current STT pipeline.
 
-### Local provider
+STT responsibilities
 
-Initial implementation:
+The STT subsystem is responsible for:
 
-```text
-faster-whisper
-        +
-Whisper Large V3 Turbo
-```
+loading the speech recognition model;
+selecting the available hardware;
+processing audio;
+producing transcription text;
+handling model/runtime errors;
+supporting realtime transcription.
 
-The exact model must remain configurable.
+The rest of the application should not depend on GigaAM-specific model internals.
 
-### Cloud provider
+7. Hardware Selection
 
-A cloud STT implementation must expose the same interface as Local STT.
+Local AI components use the available hardware where possible.
 
-The Core must not contain cloud-specific logic.
+The application supports:
 
----
-
-## 6. LLM Post-processing
-
-STT output is considered raw transcription.
-
-Post-processing is a separate pipeline:
-
-```text
-Raw transcript
-      │
-      ▼
-Filler removal
-      │
-      ▼
-Self-correction resolution
-      │
-      ▼
-Punctuation
-      │
-      ▼
-Dictionary / terminology
-      │
-      ▼
-Context / mode formatting
-      │
-      ▼
-Final text
-```
-
-The LLM layer must preserve user intent and must not invent information.
-
-Potential provider architecture:
-
-```text
-LLMProvider
-   ├── Local
-   │    └── Ollama / llama.cpp
+CUDA GPU
    │
-   └── Cloud
-        └── API
-```
+   └── preferred when available
 
-This is not required for the first vertical slice but must be compatible with the architecture.
+CPU
+   │
+   └── fallback
 
----
+Hardware detection is isolated from the higher-level application logic.
 
-## 7. Text Injection
+A missing or unavailable CUDA environment should not make the application unusable when CPU execution is possible.
 
-The final text is inserted into the currently focused application.
+8. Realtime Transcription
 
-Preferred strategy:
+Saydo supports realtime transcription while recording.
 
-```text
-Text
- │
- ▼
-Clipboard
- │
- ▼
-Paste
-```
+The intended flow is:
 
-Potential fallback mechanisms:
+Microphone
+    │
+    ├── audio chunk
+    │
+    ▼
+GigaAM-v3
+    │
+    ▼
+partial transcription
+    │
+    ▼
+UI / recording state
 
-- Keyboard simulation / SendInput.
-- Windows accessibility APIs.
+Realtime transcription is used to reduce perceived latency and provide feedback while the user is speaking.
 
-The injection mechanism must be isolated behind an interface.
+The final transcription is still treated as the authoritative text for the processing pipeline.
 
----
+9. Text Processing
 
-## 8. UI
+app/text/processor.py provides lightweight text processing.
 
-### Tray
+The processor is intentionally inexpensive because it is part of the default voice-input path.
 
-Persistent application entry point.
+The text processing stage sits between raw STT output and the final dictionary/snippet/AI processing.
+
+The architecture avoids requiring an LLM for basic dictation cleanup.
+
+10. Dictionary
+
+The user dictionary is a local persistent component.
 
 Responsibilities:
 
-- Application status.
-- Settings access.
-- Provider selection.
-- Microphone selection.
-- Exit.
+store user-defined replacements;
+apply known corrections to transcriptions;
+preserve user terminology;
+support learning from manual corrections.
 
-### Overlay
+Dictionary processing belongs to the Instant path and therefore does not require an LLM.
 
-Small non-intrusive recording indicator.
+Conservative learning
 
-States:
+When the user manually edits a transcription, Saydo can compare the original recognized text with the edited version.
 
-```text
-Idle
-Recording
-Processing
-Error
-```
+Only conservative word-level replacements are considered.
 
-The overlay must not block interaction with the active application.
+Punctuation and whitespace changes alone do not create dictionary entries.
 
----
+Duplicate corrections are avoided.
 
-## 9. Provider Configuration
+The learning logic is isolated in:
 
-The architecture supports:
+app/core/dictionary_learner.py
+11. Snippets
 
-```text
-STT:
-    Local
-    Cloud
+Snippets provide reusable text expansions.
 
-LLM:
-    Local
-    Cloud
-```
+They are stored locally and can be applied during text processing.
 
-Future mode:
+The snippets subsystem is independent from the STT and LLM providers.
 
-```text
-Auto / Hybrid
-```
+12. Processing Modes
 
-Example:
+Saydo currently supports two main processing modes.
 
-```text
-STT → Local
-LLM → Cloud
-```
+INSTANT
 
-or:
+The low-latency path:
 
-```text
-STT → Cloud
-LLM → Local
-```
+STT
+ ↓
+Text Processor
+ ↓
+Dictionary / Snippets
+ ↓
+Injection
 
-Provider selection belongs to configuration, not Core logic.
+The goal is minimal delay between speech and text insertion.
 
----
+AI
 
-## 10. Modes
+The AI path adds LLM processing:
 
-The application will eventually support context-aware modes.
+STT
+ ↓
+Text Processor
+ ↓
+Dictionary / Snippets
+ ↓
+LLM
+ ↓
+Injection
 
-### Normal
+AI mode is intended for more sophisticated cleanup and formatting.
 
-Natural language dictation.
+13. LLM Subsystem
 
-### Coding
+The LLM subsystem is separated from the main application pipeline.
 
-Optimized for:
+Current architecture:
 
-- File paths.
-- Function names.
-- camelCase.
-- snake_case.
-- CLI commands.
-- Programming terminology.
+                    ┌──────────────────┐
+                    │    LLM Router    │
+                    └────────┬─────────┘
+                             │
+                    strategy selection
+                             │
+                 ┌───────────┴───────────┐
+                 ▼                       ▼
+             Local LLM               Cloud LLM
+                 │
+                 ▼
+               Ollama
+Local LLM
 
-### Command
+Local processing is provided through Ollama.
 
-Voice commands that produce application actions instead of text.
+The application communicates with the local Ollama service rather than embedding a specific LLM implementation into the UI.
 
-Example:
+Routing
 
-```text
-"new paragraph"
-"press enter"
-"copy that"
-```
+The LLM strategy supports the concepts:
 
-Command mode is a later feature and is not part of MVP-01.
+AUTO
+LOCAL
+CLOUD
 
----
+AUTO allows the application to select the appropriate available provider.
 
-## 11. Project Structure
+The router is responsible for provider selection.
 
-Target structure:
+The rest of the application should not contain provider-specific routing logic.
 
-```text
-saydo/
+Thinking
+
+Extended LLM thinking is disabled by default.
+
+For voice dictation, response latency is generally more important than additional reasoning depth.
+
+14. Text Styles
+
+AI mode supports custom text styles.
+
+Styles define how the LLM should format the final text.
+
+Examples of possible style intents include:
+
+neutral;
+professional;
+concise;
+custom user-defined formatting.
+
+Styles are applied only where AI processing is enabled.
+
+They are not part of the low-latency Instant path.
+
+15. Text Injection
+
+app/injection/text_injector.py is responsible for inserting final text into the currently focused application.
+
+The current strategy is:
+
+Final text
+    │
+    ▼
+Clipboard
+    │
+    ▼
+Ctrl+V
+    │
+    ▼
+Active application
+
+Before injection, Saydo preserves the existing clipboard contents.
+
+After the paste operation, the previous clipboard contents are restored.
+
+This keeps the voice-input operation transparent to the rest of the user's workflow.
+
+16. History
+
+Saydo maintains local dictation history.
+
+History records contain information needed to display and analyze previous utterances, including:
+
+timestamp;
+transcription text;
+raw transcription where applicable;
+duration;
+word count;
+words per minute.
+
+The history is stored locally.
+
+History is also used by the dictionary-learning workflow when the user edits previous transcriptions.
+
+17. Statistics
+
+Saydo collects local dictation statistics.
+
+Current metrics include:
+
+Words
+Duration
+WPM
+Timestamp
+
+Statistics can be exported to CSV from the application settings.
+
+The generated CSV is user data and should not be committed to the source repository.
+
+18. Persistent User Data
+
+User-specific data is stored separately from application source code.
+
+Examples include:
+
+data/
+├── history.json
+├── dictionary.json
+└── ...
+
+These files contain user-specific state and should not be committed to the repository.
+
+Generated statistics exports are also considered local user data.
+
+19. Windows Integration
+
+Saydo is currently Windows-first.
+
+Single instance
+
+The application uses a Windows named mutex to prevent multiple application instances from running simultaneously.
+
+If another Saydo instance is already running, the user receives a Windows notification instead of starting a second main instance.
+
+Autostart
+
+Saydo can register itself in the current user's Windows startup settings.
+
+The implementation uses the per-user Windows Run registry key.
+
+The setting is exposed through the dashboard.
+
+Tray
+
+The tray provides persistent application access while Saydo is running.
+
+Overlay
+
+The recording overlay provides visual feedback without taking focus away from the active application.
+
+20. Application UI
+
+The UI is implemented with PySide6.
+
+Main UI responsibilities are separated into:
+
+Dashboard
+Overlay
+Tray
+Dashboard
+
+The dashboard provides:
+
+application settings;
+dictation mode selection;
+AI configuration;
+dictionary management;
+snippets;
+styles;
+history;
+statistics export;
+Windows autostart.
+Overlay
+
+The overlay provides lightweight visual recording feedback.
+
+It should remain non-intrusive and must not steal focus from the application where the user is dictating.
+
+Tray
+
+The tray provides persistent access to the application while the dashboard is closed.
+
+21. Logging
+
+Saydo uses Python's standard logging system.
+
+The logging subsystem provides:
+
+configurable log level;
+console logging;
+rotating file logging;
+UTF-8 log files;
+separate application logging from business logic.
+
+Logs are written to:
+
+logs/saydo.log
+
+Log files are rotated to prevent unlimited growth.
+
+22. Runtime
+
+app/runtime.py contains runtime/environment configuration shared by application components.
+
+Runtime configuration includes environment-specific behavior such as hardware/runtime setup.
+
+The application should keep runtime-specific configuration separate from business logic.
+
+23. Error Handling
+
+External dependencies must fail gracefully where possible.
+
+Examples:
+
+CUDA unavailable
+      ↓
+CPU fallback
+
+LLM unavailable
+      ↓
+AI processing error / fallback handling
+
+Clipboard failure
+      ↓
+restore attempt + error logging
+
+Missing model
+      ↓
+explicit startup error
+
+An external provider failure should not corrupt persistent user data.
+
+24. Testing Architecture
+
+The project uses automated tests for core application logic.
+
+The test suite currently covers the major deterministic components, including:
+
+audio recording logic;
+silence trimming;
+hotkey state handling;
+dictionary;
+dictionary learning;
+snippets;
+styles;
+processing modes;
+pipeline;
+LLM routing/settings;
+autostart;
+single-instance logic;
+logging;
+text injection;
+runtime helpers.
+
+External systems are mocked where appropriate.
+
+Examples:
+
+Real microphone      → mocked
+Global keyboard hook → mocked
+Windows registry     → mocked
+Windows mutex        → mocked
+Clipboard            → mocked
+LLM service          → mocked
+STT model loading    → mocked
+Timers / system time → controlled in tests
+
+Tests should verify observable behavior rather than implementation details.
+
+The hotkey tests use controlled monotonic time instead of real sleeps so that timing-dependent tests remain fast and deterministic.
+
+25. Current Project Structure
+Saydo/
 │
 ├── app/
-│   ├── core/
-│   │   ├── session.py
-│   │   ├── state.py
-│   │   └── events.py
-│   │
 │   ├── audio/
 │   │   └── recorder.py
 │   │
-│   ├── stt/
-│   │   ├── base.py
-│   │   ├── local_whisper.py
-│   │   └── cloud.py
-│   │
-│   ├── llm/
-│   │   ├── base.py
-│   │   ├── local.py
-│   │   └── cloud.py
-│   │
-│   ├── injection/
-│   │   └── text_injector.py
+│   ├── core/
+│   │   ├── autostart.py
+│   │   ├── dictionary.py
+│   │   ├── dictionary_learner.py
+│   │   ├── logging.py
+│   │   ├── modes.py
+│   │   ├── pipeline.py
+│   │   ├── single_instance.py
+│   │   ├── snippets.py
+│   │   └── style.py
 │   │
 │   ├── hotkey/
 │   │   └── manager.py
 │   │
-│   └── ui/
-│       ├── tray.py
-│       ├── overlay.py
-│       └── settings.py
-│
-├── models/
+│   ├── injection/
+│   │   └── text_injector.py
+│   │
+│   ├── llm/
+│   │   ├── base.py
+│   │   ├── hardware.py
+│   │   ├── local.py
+│   │   ├── ollama.py
+│   │   ├── router.py
+│   │   └── settings.py
+│   │
+│   ├── stt/
+│   │   └── local_gigaam.py
+│   │
+│   ├── text/
+│   │   └── processor.py
+│   │
+│   ├── ui/
+│   │   ├── dashboard.py
+│   │   ├── overlay.py
+│   │   └── tray.py
+│   │
+│   └── runtime.py
 │
 ├── data/
-│   ├── dictionary/
-│   └── history/
+│   ├── dictionary.json
+│   └── history.json
+│
+├── logs/
+│
+├── models/
 │
 ├── tests/
 │
@@ -438,86 +689,110 @@ saydo/
 ├── requirements.txt
 ├── README.md
 └── architecture.md
-```
 
-The exact module layout may change during implementation if a simpler structure is proven better. Architectural boundaries are more important than filenames.
+The exact file structure may evolve. The functional boundaries between subsystems are more important than individual filenames.
 
----
+26. Dependency Boundaries
 
-## 12. Development Priorities
+The intended dependency direction is:
 
-### MVP-01 — Voice → Text
+UI
+ │
+ ▼
+Application / Core
+ │
+ ├── Audio
+ ├── STT
+ ├── Text Processing
+ ├── Dictionary
+ ├── Snippets
+ ├── LLM
+ └── Injection
 
-Acceptance criteria:
+Infrastructure-specific implementations should not leak into unrelated components.
 
-- [ ] Application starts.
-- [ ] Global hotkey works.
-- [ ] Pressing the hotkey starts recording.
-- [ ] Releasing it stops recording.
-- [ ] Audio reaches STT.
-- [ ] Whisper returns text.
-- [ ] Text reaches clipboard.
-- [ ] Text is pasted into the active application.
-- [ ] Errors do not crash the application.
+For example:
 
-### MVP-02 — AI Cleanup
+the UI should not call GigaAM directly;
+the UI should not contain Ollama request logic;
+the STT layer should not manipulate the clipboard;
+the LLM layer should not control the global hotkey;
+dictionary learning should not depend on PySide6 widgets.
+27. Performance Priorities
 
-- [ ] Cloud STT provider.
-- [ ] Local/cloud STT switch.
-- [ ] LLM post-processing.
-- [ ] Punctuation.
-- [ ] Filler removal.
-- [ ] Self-correction handling.
+For the main dictation path, priority is:
 
-### MVP-03 — Product Demo
+1. Perceived latency
+2. Transcription quality
+3. Injection reliability
+4. Resource usage
+5. Advanced processing
 
-- [ ] Polished overlay.
-- [ ] Tray UI.
-- [ ] Settings.
-- [ ] Microphone selection.
-- [ ] Provider selection.
-- [ ] Coding mode.
-- [ ] Demo-ready reliability.
+Heavy processing should not be introduced into the Instant path without a measurable benefit.
 
----
+The project should prefer measurable optimizations over speculative micro-optimizations.
 
-## 13. Architecture Rules
+Important benchmark dimensions include:
 
-1. Core must not depend directly on a specific AI vendor.
-2. STT providers must implement a common interface.
-3. LLM providers must implement a common interface.
-4. UI must not contain business logic.
-5. Provider failures must be recoverable.
-6. Local operation must remain possible without internet access.
-7. The MVP path must remain short and synchronous from the user's perspective.
-8. New providers should be addable without modifying Core.
-9. Do not add abstractions without a concrete use case.
-10. During the hackathon, a working vertical slice has priority over architectural perfection.
+transcription latency;
+end-to-end latency;
+CPU usage;
+GPU usage;
+memory usage;
+transcription quality.
+28. Hackathon Strategy
 
----
+The primary goal is to maximize similarity to the interaction model of modern AI dictation products, especially Wispr Flow.
 
-## 14. Hackathon Strategy
+The core demonstration should remain simple:
 
-The project is built in vertical slices.
+Press Right Ctrl
+      ↓
+Speak
+      ↓
+Release
+      ↓
+Clean text appears in the active application
 
-Priority order:
+Additional functionality exists to improve this core experience:
 
-```text
-1. Working voice input
-2. Reliable transcription
-3. Reliable text injection
-4. AI cleanup
-5. Local/cloud choice
-6. UX polish
-7. Differentiating features
-```
+Realtime transcription
+Hands-free mode
+Dictionary
+Snippets
+AI cleanup
+Styles
+History
+Statistics
+Windows integration
 
-Do not spend significant time on features that do not improve the live demo before the core loop is reliable.
+Features should be prioritized by their impact on:
 
-The primary demo loop is:
+dictation speed;
+perceived latency;
+transcription quality;
+reliability;
+user experience.
+29. Current Limitations
 
-```text
+The current implementation is Windows-first.
+
+Some architecture concepts may support future cloud providers or additional AI backends, but only implemented providers should be considered production features.
+
+The current local STT architecture is based on GigaAM-v3.
+
+The previous Whisper implementation is intentionally no longer part of the application.
+
+The UI contains substantially more code than the deterministic core because it combines dashboard, settings, history, dictionary, snippets, styles and Windows desktop integration.
+
+30. Architectural Rule
+
+The most important rule of the project is:
+
+Keep the voice-input path fast, reliable and understandable.
+
+The architecture should serve the interaction:
+
 Press → Speak → Release → Text appears
-```
 
-Everything else supports this loop.
+rather than adding abstraction for its own sake.            
