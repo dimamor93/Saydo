@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.autostart import AutostartManager
 from app.core.dictionary import UserDictionary
 from app.core.snippets import SnippetStore
 from app.core.style import StyleStore
@@ -822,6 +823,7 @@ class MainWindow(QMainWindow):
         self._dictionary = UserDictionary()
         self._snippets = SnippetStore()
         self._styles = StyleStore()
+        self._autostart = AutostartManager()
         self.allow_close = False
         self.hotkey = hotkey
         self.mode = mode
@@ -839,6 +841,16 @@ class MainWindow(QMainWindow):
 
         self._build()
         self._load_theme()
+
+        settings = self._load_settings()
+        autostart_enabled = bool(settings.get("autostart", False))
+        if autostart_enabled and not self._autostart.is_enabled():
+            try:
+                self._autostart.enable()
+            except OSError:
+                autostart_enabled = False
+        self._set_autostart_switch(autostart_enabled)
+
         self._apply_windows_titlebar()
         self.refresh()
 
@@ -1694,9 +1706,28 @@ class MainWindow(QMainWindow):
 
     def _settings_page(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
+
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("SettingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.viewport().setAutoFillBackground(False)
+
+        content = QWidget()
+        content.setObjectName("SettingsContent")
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(14)
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
         appearance = self._card()
         a = QVBoxLayout(appearance)
@@ -1750,6 +1781,32 @@ class MainWindow(QMainWindow):
         c.addWidget(QLabel("STT:  GigaAM-v3 e2e-CTC"))
         layout.addWidget(controls)
 
+        autostart = self._card()
+        au = QHBoxLayout(autostart)
+        au.setContentsMargins(24, 18, 24, 18)
+
+        autostart_text = QVBoxLayout()
+        autostart_heading = QLabel("Запускать Saydo вместе с Windows")
+        autostart_heading.setObjectName("SectionTitle")
+        autostart_desc = QLabel(
+            "Saydo будет автоматически запускаться после входа в Windows."
+        )
+        autostart_desc.setObjectName("MutedText")
+        autostart_text.addWidget(autostart_heading)
+        autostart_text.addWidget(autostart_desc)
+        au.addLayout(autostart_text, 1)
+
+        self.autostart_switch = QPushButton()
+        self.autostart_switch.setObjectName("AISwitch")
+        self.autostart_switch.setCheckable(True)
+        self.autostart_switch.setFixedSize(76, 34)
+        self.autostart_switch.setCursor(Qt.PointingHandCursor)
+        self.autostart_switch.clicked.connect(self._toggle_autostart)
+        au.addWidget(self.autostart_switch)
+
+        self._set_autostart_switch(self._autostart.is_enabled())
+        layout.addWidget(autostart)
+
         statistics = self._card()
         s = QVBoxLayout(statistics)
         s.setContentsMargins(24, 22, 24, 22)
@@ -1800,6 +1857,57 @@ class MainWindow(QMainWindow):
         self._refresh_llm_models()
         layout.addStretch()
         return page
+
+    def _set_autostart_switch(self, enabled: bool) -> None:
+        self.autostart_switch.blockSignals(True)
+        self.autostart_switch.setChecked(enabled)
+        self.autostart_switch.setText("Вкл." if enabled else "Выкл.")
+        self.autostart_switch.blockSignals(False)
+
+    def _toggle_autostart(self, enabled: bool) -> None:
+        try:
+            if enabled:
+                self._autostart.enable()
+            else:
+                self._autostart.disable()
+        except OSError as exc:
+            self._set_autostart_switch(not enabled)
+            QMessageBox.critical(
+                self,
+                "Ошибка автозапуска",
+                f"Не удалось изменить автозапуск:\n{exc}",
+            )
+            return
+
+        self._save_autostart(enabled)
+        self._set_autostart_switch(enabled)
+
+    def _load_settings(self) -> dict[str, Any]:
+        path = data_path("settings.json")
+        try:
+            if path.exists():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    return loaded
+        except Exception:
+            pass
+        return {}
+
+    def _save_autostart(self, enabled: bool) -> None:
+        path = data_path("settings.json")
+        try:
+            settings = self._load_settings()
+            settings["autostart"] = enabled
+            path.write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Ошибка сохранения",
+                f"Не удалось сохранить настройку автозапуска:\n{exc}",
+            )
 
     def _export_statistics(self) -> None:
         target, _ = QFileDialog.getSaveFileName(
@@ -2345,7 +2453,7 @@ class MainWindow(QMainWindow):
         for entry in entries:
             item = QListWidgetItem()
             widget = self._history_card(entry, editable=True)
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(QSize(0, 82))
             item.setData(Qt.UserRole, entry)
             self.history_list.addItem(item)
             self.history_list.setItemWidget(item, widget)
@@ -2654,6 +2762,17 @@ class MainWindow(QMainWindow):
             background: {c["bg"]};
         }}
         QWidget#RecentContent {{
+            background: {c["bg"]};
+        }}
+        QScrollArea#SettingsScroll {{
+            background: {c["bg"]};
+            border: none;
+        }}
+        QScrollArea#SettingsScroll > QWidget#qt_scrollarea_viewport {{
+            background: {c["bg"]};
+            border: none;
+        }}
+        QWidget#SettingsContent {{
             background: {c["bg"]};
         }}
         QPushButton#ThemeButton {{
