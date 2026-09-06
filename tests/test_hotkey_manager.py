@@ -90,6 +90,21 @@ def make_event(event_type: str):
     return event
 
 
+def wait_for_events(
+    events: list[str],
+    expected: list[str],
+    timeout: float = 1.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        if events == expected:
+            return
+        time.sleep(0.01)
+
+    assert events == expected
+
+
 def test_hold_and_release_cycle() -> None:
     events: list[str] = []
     hook_callback = None
@@ -113,9 +128,8 @@ def test_hold_and_release_cycle() -> None:
         time.sleep(manager.min_hold_time + 0.05)
         hook_callback(make_event("up"))
 
-        time.sleep(manager.double_tap_window + 0.05)
+        wait_for_events(events, ["press", "release"])
 
-        assert events == ["press", "release"]
         manager.stop()
 
 
