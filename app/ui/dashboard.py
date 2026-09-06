@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import csv
 import json
 import queue
 import re
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -104,11 +106,17 @@ class HistoryStore:
         mode: str,
         raw_text: str | None = None,
     ) -> None:
+        word_count = len(text.split())
+        duration = round(duration, 2)
+        wpm = round((word_count / duration) * 60, 1) if duration > 0 else 0.0
+
         item = {
             "text": text,
             "raw_text": raw_text if raw_text is not None else text,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "duration": round(duration, 2),
+            "duration": duration,
+            "words": word_count,
+            "wpm": wpm,
             "mode": mode,
         }
         with self._lock:
@@ -119,6 +127,30 @@ class HistoryStore:
                 json.dumps(entries, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+    def export_csv(self, target: Path) -> None:
+        """Export dictation statistics to CSV."""
+        entries = self.load()
+
+        with target.open("w", newline="", encoding="utf-8-sig") as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=("timestamp", "words", "wpm", "duration"),
+            )
+            writer.writeheader()
+
+            for entry in entries:
+                writer.writerow(
+                    {
+                        "timestamp": entry.get("timestamp", ""),
+                        "words": entry.get(
+                            "words",
+                            len(str(entry.get("text", "")).split()),
+                        ),
+                        "wpm": entry.get("wpm", 0),
+                        "duration": entry.get("duration", 0),
+                    }
+                )
 
     def update(self, target: dict[str, Any], text: str) -> None:
         """Persist an edited transcription."""
@@ -1718,6 +1750,26 @@ class MainWindow(QMainWindow):
         c.addWidget(QLabel("STT:  GigaAM-v3 e2e-CTC"))
         layout.addWidget(controls)
 
+        statistics = self._card()
+        s = QVBoxLayout(statistics)
+        s.setContentsMargins(24, 22, 24, 22)
+
+        sh = QLabel("Статистика")
+        sh.setObjectName("SectionTitle")
+        sd = QLabel("Экспортируйте историю диктовок в CSV для анализа.")
+        sd.setObjectName("MutedText")
+
+        s.addWidget(sh)
+        s.addWidget(sd)
+        s.addSpacing(12)
+
+        export_button = QPushButton("Экспорт статистики в CSV")
+        export_button.setObjectName("SecondaryButton")
+        export_button.clicked.connect(self._export_statistics)
+        s.addWidget(export_button)
+
+        layout.addWidget(statistics)
+
         llm_card = self._card()
         lc = QVBoxLayout(llm_card)
         lc.setContentsMargins(24, 22, 24, 22)
@@ -1748,6 +1800,31 @@ class MainWindow(QMainWindow):
         self._refresh_llm_models()
         layout.addStretch()
         return page
+
+    def _export_statistics(self) -> None:
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт статистики",
+            str(data_path("saydo_statistics.csv")),
+            "CSV files (*.csv)",
+        )
+
+        if not target:
+            return
+
+        try:
+            self.history.export_csv(Path(target))
+            QMessageBox.information(
+                self,
+                "Экспорт завершён",
+                f"Статистика сохранена в:\n{target}",
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Ошибка экспорта",
+                f"Не удалось сохранить CSV:\n{exc}",
+            )
 
     def _refresh_llm_models(self) -> None:
         if not hasattr(self, "llm_model_combo"):
