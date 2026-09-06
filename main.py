@@ -6,6 +6,7 @@ from app.audio.recorder import AudioRecorder
 from app.core.logging import get_logger
 from app.core.modes import ProcessingMode
 from app.core.pipeline import ProcessingPipeline
+from app.core.single_instance import SingleInstance, show_already_running_message
 from app.hotkey.manager import HotkeyManager
 from app.injection.text_injector import TextInjector
 from app.llm.local import LocalLLMProvider
@@ -23,7 +24,7 @@ MODE = ProcessingMode.INSTANT
 logger = get_logger("main")
 
 
-def main() -> None:
+def _run_app() -> None:
     logger.info("Starting...")
 
     recorder = AudioRecorder()
@@ -381,9 +382,24 @@ def main() -> None:
 
     logger.info("Exiting...")
 
+def main() -> None:
+    instance = SingleInstance("Saydo")
+
+    if not instance.acquire():
+        show_already_running_message()
+        return
+
+    try:
+        _run_app()
+    finally:
+        instance.release()
+
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 
