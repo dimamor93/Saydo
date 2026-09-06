@@ -1,4 +1,7 @@
-{
+﻿{
   "theme": "dark",
-  "ai_mode": false
+  "ai_mode": false,
+  "log_level": "INFO"
 }
+
+

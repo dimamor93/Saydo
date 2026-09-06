@@ -3,6 +3,7 @@
 import threading
 
 from app.audio.recorder import AudioRecorder
+from app.core.logging import get_logger
 from app.core.modes import ProcessingMode
 from app.core.pipeline import ProcessingPipeline
 from app.hotkey.manager import HotkeyManager
@@ -19,9 +20,11 @@ from app.ui.tray import SaydoTray
 HOTKEY = "right ctrl"
 MODE = ProcessingMode.INSTANT
 
+logger = get_logger("main")
+
 
 def main() -> None:
-    print("[Saydo] Starting...")
+    logger.info("Starting...")
 
     recorder = AudioRecorder()
     stt = LocalGigaAMProvider()
@@ -52,11 +55,11 @@ def main() -> None:
         nonlocal current_mode
         current_mode = ProcessingMode(mode)
         pipeline.set_mode(current_mode)
-        print(f"[Saydo] Mode changed: {current_mode.value}")
+        logger.info("Mode changed: %s", current_mode.value)
 
     def on_model_change(model: str) -> None:
         llm.model = model
-        print(f"[Saydo] LLM model changed: {model}")
+        logger.info("LLM model changed: %s", model)
 
     desktop_ui = SaydoDesktopUI(
         hotkey=HOTKEY,
@@ -70,6 +73,7 @@ def main() -> None:
     live_stop_event = threading.Event()
     live_thread: threading.Thread | None = None
     recording_stopping = False
+    shutdown_started = False
 
     def realtime_worker() -> None:
         last_text = ""
@@ -82,19 +86,19 @@ def main() -> None:
                         print(f"[Saydo] LIVE STT: {text}")
                         try:
                             overlay.update_text(text)
-                        except Exception as exc:
-                            print(f"[Saydo] Overlay live error: {exc}")
+                        except Exception:
+                            logger.exception("Overlay live error")
                         try:
                             desktop_ui.set_live_text(text)
-                        except Exception as exc:
-                            print(f"[Saydo] UI live error: {exc}")
+                        except Exception:
+                            logger.exception("UI live error")
                         last_text = text
 
                         if hands_free:
                             schedule_hands_free_timeout()
 
-            except Exception as exc:
-                print(f"[Saydo] Realtime STT error: {exc}")
+            except Exception:
+                logger.exception("Realtime STT error")
             live_stop_event.wait(0.5)
 
     # Hands-free state.
@@ -109,7 +113,7 @@ def main() -> None:
             hands_free_stop_timer = None
 
         if hands_free and recorder.is_recording:
-            print("[Saydo] Hands-free timeout.")
+            logger.info("Hands-free timeout.")
             stop_recording()
 
     def schedule_hands_free_timeout() -> None:
@@ -129,14 +133,14 @@ def main() -> None:
         nonlocal hands_free
 
         if hands_free:
-            print("[Saydo] Hands-free already active.")
+            logger.info("Hands-free already active.")
             stop_hands_free()
             hands_free = False
             return
 
         hands_free = True
 
-        print("[Saydo] Hands-free enabled.")
+        logger.info("Hands-free enabled.")
 
         if not recorder.is_recording:
             start_recording()
@@ -154,32 +158,39 @@ def main() -> None:
         if hands_free_stop_timer is not None:
             hands_free_stop_timer.cancel()
 
-        print("[Saydo] Hands-free disabled.")
+        logger.info("Hands-free disabled.")
 
     def shutdown() -> None:
+        nonlocal shutdown_started
+
+        if shutdown_started:
+            return
+
+        shutdown_started = True
+
         disable_hands_free()
-        print("[Saydo] Shutting down...")
+        logger.info("Shutting down...")
 
         try:
             hotkey.stop()
-        except Exception as exc:
-            print(f"[Saydo] Hotkey shutdown error: {exc}")
+        except Exception:
+            logger.exception("Hotkey shutdown error")
 
         if recorder.is_recording:
             try:
                 stop_recording()
-            except Exception as exc:
-                print(f"[Saydo] Recording shutdown error: {exc}")
+            except Exception:
+                logger.exception("Recording shutdown error")
 
         try:
             overlay.close()
-        except Exception as exc:
-            print(f"[Saydo] Overlay shutdown error: {exc}")
+        except Exception:
+            logger.exception("Overlay shutdown error")
 
         try:
             desktop_ui.stop()
-        except Exception as exc:
-            print(f"[Saydo] UI shutdown error: {exc}")
+        except Exception:
+            logger.exception("UI shutdown error")
 
     def start_recording() -> None:
         if recorder.is_recording:
@@ -189,7 +200,7 @@ def main() -> None:
             recorder.start()
             live_stop_event.clear()
 
-            print("[Saydo] Recording...")
+            logger.info("Recording...")
 
             nonlocal live_thread
             live_thread = threading.Thread(
@@ -201,16 +212,16 @@ def main() -> None:
 
             try:
                 overlay.show_recording()
-            except Exception as exc:
-                print(f"[Saydo] Overlay show error: {exc}")
+            except Exception:
+                logger.exception("Overlay show error")
 
             try:
                 desktop_ui.set_runtime_state("recording")
             except Exception:
                 pass
 
-        except Exception as exc:
-            print(f"[Saydo] Recording error: {exc}")
+        except Exception:
+            logger.exception("Recording error")
 
     def stop_recording() -> None:
         nonlocal hands_free, recording_stopping
@@ -246,7 +257,7 @@ def main() -> None:
                 pass
 
             if len(audio) == 0:
-                print("[Saydo] No audio captured.")
+                logger.warning("No audio captured.")
                 return
 
             duration = len(audio) / recorder.sample_rate
@@ -256,27 +267,27 @@ def main() -> None:
                 f"{duration:.2f} seconds."
             )
 
-            print("[Saydo] Transcribing...")
+            logger.info("Transcribing...")
 
             raw_text = stt.transcribe(audio)
 
             if not raw_text:
-                print("[Saydo] Nothing recognized.")
+                logger.info("Nothing recognized.")
                 return
 
-            print(f"[Saydo] STT: {raw_text}")
+            logger.info("STT: %s", raw_text)
 
             try:
                 text = pipeline.process(raw_text)
-            except Exception as exc:
-                print(f"[Saydo] Processing error: {exc}")
+            except Exception:
+                logger.exception("Processing error")
                 return
 
             if not text:
-                print("[Saydo] Nothing to insert.")
+                logger.info("Nothing to insert.")
                 return
 
-            print(f"[Saydo] Final: {text}")
+            logger.info("Final: %s", text)
 
             # ---------------------------------------------------------
             # CRITICAL ORDER:
@@ -288,15 +299,15 @@ def main() -> None:
 
             try:
                 injector.inject(text)
-                print("[Saydo] Text injected.")
-            except Exception as exc:
-                print(f"[Saydo] Injection error: {exc}")
+                logger.info("Text injected.")
+            except Exception:
+                logger.exception("Injection error")
 
             # Update UI/history only after the main operation succeeded.
             try:
                 desktop_ui.set_live_text(text)
-            except Exception as exc:
-                print(f"[Saydo] UI live text error: {exc}")
+            except Exception:
+                logger.exception("UI live text error")
 
             try:
                 desktop_ui.add_transcription(
@@ -305,11 +316,11 @@ def main() -> None:
                     current_mode.value,
                     raw_text=raw_text,
                 )
-            except Exception as exc:
-                print(f"[Saydo] History error: {exc}")
+            except Exception:
+                logger.exception("History error")
 
-        except Exception as exc:
-            print(f"[Saydo] Error: {exc}")
+        except Exception:
+            logger.exception("Error")
 
         finally:
             recording_stopping = False
@@ -344,23 +355,21 @@ def main() -> None:
         on_double_tap=enable_hands_free,
     )
 
-    print()
-    print("[Saydo] Ready")
-    print(f"[Saydo] Mode: {current_mode.value}")
-    print(f"[Saydo] LLM model: {llm.model}")
-    print(f"[Saydo] Hold '{HOTKEY}', speak, then release.")
-    print("[Saydo] Press Esc to exit.")
-    print()
+    logger.info("Ready")
+    logger.info("Mode: %s", current_mode.value)
+    logger.info("LLM model: %s", llm.model)
+    logger.info("Hold '%s', speak, then release.", HOTKEY)
+    logger.info("Press Esc to exit.")
 
     try:
         # Qt must run on the main thread.
         desktop_ui.start()
 
     except KeyboardInterrupt:
-        print("[Saydo] Interrupted.")
+        logger.info("Interrupted.")
 
-    except Exception as exc:
-        print(f"[Saydo] Desktop UI error: {exc}")
+    except Exception:
+        logger.exception("Desktop UI error")
 
     finally:
         shutdown()
@@ -370,10 +379,11 @@ def main() -> None:
         except Exception:
             pass
 
-    print("[Saydo] Exiting...")
+    logger.info("Exiting...")
 
 
 if __name__ == "__main__":
     main()
+
 
 
